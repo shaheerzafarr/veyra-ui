@@ -1,0 +1,77 @@
+import '../models/public_profile.dart';
+
+const discoverableProfiles = <PublicProfile>[
+  PublicProfile(
+    id: 'aisha-khan',
+    displayName: 'Aisha Khan',
+    username: 'aisha',
+    avatarColor: 0xFF315C51,
+    bio: 'Product designer · Karachi',
+    isContact: true,
+  ),
+  PublicProfile(
+    id: 'maya-chen',
+    displayName: 'Maya Chen',
+    username: 'mayac',
+    avatarColor: 0xFF4E4667,
+    bio: 'Designing thoughtful systems.',
+  ),
+  PublicProfile(
+    id: 'omar-siddiqui',
+    displayName: 'Omar Siddiqui',
+    username: 'omars',
+    avatarColor: 0xFF69523B,
+    bio: 'Coffee, code, and good conversation.',
+    isContact: true,
+  ),
+  PublicProfile(
+    id: 'sana-ahmed',
+    displayName: 'Sana Ahmed',
+    username: 'sanaahmed',
+    avatarColor: 0xFF355D75,
+    bio: 'Writer and amateur film photographer.',
+  ),
+  PublicProfile(
+    id: 'sana-ali',
+    displayName: 'Sana Ahmed',
+    username: 'sanaali',
+    avatarColor: 0xFF6A3F60,
+    bio: 'Building small things for the web.',
+  ),
+  PublicProfile(
+    id: 'zara-rahman',
+    displayName: 'Zara Rahman',
+    username: 'zarar',
+    avatarColor: 0xFF476245,
+    bio: 'Illustrator · currently learning ceramics.',
+    hasPendingRequest: true,
+  ),
+  PublicProfile(
+    id: 'ibrahim-khan',
+    displayName: 'Ibrahim Khan',
+    username: 'ibrahimk',
+    avatarColor: 0xFF4C596B,
+    bio: 'Runner. Reader. Occasional cook.',
+  ),
+  PublicProfile(
+    id: 'noor-fatima',
+    displayName: 'Noor Fatima',
+    username: 'noorf',
+    avatarColor: 0xFF73544C,
+    bio: 'Researching humane technology.',
+  ),
+  PublicProfile(
+    id: 'daniel-ross',
+    displayName: 'Daniel Ross',
+    username: 'dross',
+    avatarColor: 0xFF3E6570,
+    bio: 'Music, maps, and long walks.',
+  ),
+  PublicProfile(
+    id: 'leila-hassan',
+    displayName: 'Leila Hassan',
+    username: 'leilah',
+    avatarColor: 0xFF655044,
+    bio: 'Architect and weekend gardener.',
+  ),
+];
