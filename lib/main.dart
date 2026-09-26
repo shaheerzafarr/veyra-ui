@@ -1,11 +1,30 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'core/data/local_database.dart';
+import 'core/data/repositories.dart';
+import 'core/state/veyra_controller.dart';
 import 'core/theme/app_theme.dart';
 import 'features/app_ui/veyra_feature_screens.dart';
 import 'features/chats/chat_home_screen.dart';
 import 'features/discovery/discover_people_screen.dart';
 
-void main() => runApp(const VeyraApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final repository = LocalVeyraRepository(VeyraDatabase());
+  final controller = VeyraController(
+    users: repository,
+    conversations: repository,
+    messages: repository,
+    requests: repository,
+    settings: repository,
+  );
+  await controller.initialize();
+  runApp(ProviderScope(
+    overrides: [veyraControllerProvider.overrideWith((ref) => controller)],
+    child: const VeyraApp(),
+  ));
+}
 
 class VeyraApp extends StatelessWidget {
   const VeyraApp({super.key});

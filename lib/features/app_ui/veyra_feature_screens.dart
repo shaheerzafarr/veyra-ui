@@ -1,40 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/models/entities.dart';
 import '../../core/models/public_profile.dart';
+import '../../core/state/veyra_controller.dart';
 import '../../core/theme/app_theme.dart';
 import '../discovery/discover_people_screen.dart';
 import '../chats/conversation_extras.dart';
 import '../settings/settings_pages.dart';
 
-class VeyraRequestsScreen extends StatefulWidget {
+class VeyraRequestsScreen extends ConsumerWidget {
   const VeyraRequestsScreen({super.key});
 
-  @override
-  State<VeyraRequestsScreen> createState() => _VeyraRequestsScreenState();
-}
-
-class _VeyraRequestsScreenState extends State<VeyraRequestsScreen> {
-  final _requests = <_Request>[
-    const _Request(
-        'Maya Chen',
-        '@mayac',
-        'I loved the direction you took on the last project. Would be great to connect.',
-        '18 min ago',
-        0xFF4E4667),
-    const _Request(
-        'Noor Fatima',
-        '@noorf',
-        'Hi! I saw we share a few interests and wanted to say hello.',
-        'Yesterday',
-        0xFF73544C)
-  ];
-
-  Future<void> _remove(_Request request, String action) async {
+  Future<void> _act(BuildContext context, WidgetRef ref,
+      ContactRequestView view, String action) async {
     final confirmed = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-              title: Text('$action ${request.name}?'),
+              title: Text('$action ${view.otherUser.displayName}?'),
               content: Text(action == 'Accept'
                   ? 'This will add the conversation to your chats.'
                   : 'This request will be removed from your inbox.'),
@@ -47,50 +32,69 @@ class _VeyraRequestsScreenState extends State<VeyraRequestsScreen> {
                     child: Text(action))
               ],
             ));
-    if (confirmed == true && mounted) {
-      setState(() => _requests.remove(request));
+    if (confirmed == true && context.mounted) {
+      final controller = ref.read(veyraControllerProvider);
+      if (action == 'Accept') {
+        await controller.acceptRequest(view.request.id);
+      } else if (action == 'Decline') {
+        await controller.declineRequest(view.request.id);
+      } else {
+        await controller.blockRequest(view.request.id);
+      }
+      if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text(action == 'Accept'
-              ? '${request.name} was added to Chats.'
+              ? '${view.otherUser.displayName} was added to Chats.'
               : 'Request $action.')));
     }
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(
-            title: const Text('Message requests',
-                style: TextStyle(fontWeight: FontWeight.w700))),
-        body: _requests.isEmpty
-            ? const _EmptyState(
-                icon: Icons.inbox_outlined,
-                title: 'No message requests',
-                subtitle: 'Requests from new people will appear here.')
-            : ListView.separated(
-                padding: const EdgeInsets.all(16),
-                itemCount: _requests.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 12),
-                itemBuilder: (context, index) {
-                  final request = _requests[index];
-                  return _RequestCard(
-                      request: request,
-                      onAccept: () => _remove(request, 'Accept'),
-                      onDecline: () => _remove(request, 'Decline'),
-                      onBlock: () => _remove(request, 'Block'));
-                },
-              ),
-      );
+  Widget build(BuildContext context, WidgetRef ref) {
+    final views = ref.watch(veyraControllerProvider).incomingRequests;
+    return Scaffold(
+      appBar: AppBar(
+          title: const Text('Message requests',
+              style: TextStyle(fontWeight: FontWeight.w700))),
+      body: views.isEmpty
+          ? const _EmptyState(
+              icon: Icons.inbox_outlined,
+              title: 'No message requests',
+              subtitle: 'Requests from new people will appear here.')
+          : ListView.separated(
+              padding: const EdgeInsets.all(16),
+              itemCount: views.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 12),
+              itemBuilder: (context, index) {
+                final view = views[index];
+                final request = _Request(
+                  view.otherUser.displayName,
+                  '@${view.otherUser.username}',
+                  view.request.introductoryMessage,
+                  _relativeTime(view.request.createdAt),
+                  view.otherUser.avatarColor,
+                );
+                return _RequestCard(
+                    request: request,
+                    onAccept: () => _act(context, ref, view, 'Accept'),
+                    onDecline: () => _act(context, ref, view, 'Decline'),
+                    onBlock: () => _act(context, ref, view, 'Block'));
+              },
+            ),
+    );
+  }
 }
 
-class VeyraIntroComposerScreen extends StatefulWidget {
+class VeyraIntroComposerScreen extends ConsumerStatefulWidget {
   const VeyraIntroComposerScreen({required this.profile, super.key});
   final PublicProfile profile;
   @override
-  State<VeyraIntroComposerScreen> createState() =>
+  ConsumerState<VeyraIntroComposerScreen> createState() =>
       _VeyraIntroComposerScreenState();
 }
 
-class _VeyraIntroComposerScreenState extends State<VeyraIntroComposerScreen> {
+class _VeyraIntroComposerScreenState
+    extends ConsumerState<VeyraIntroComposerScreen> {
   final _controller = TextEditingController();
   @override
   void dispose() {
@@ -148,15 +152,29 @@ class _VeyraIntroComposerScreenState extends State<VeyraIntroComposerScreen> {
                       FilledButton.icon(
                           onPressed: _controller.text.trim().isEmpty
                               ? null
-                              : () {
-                                  Navigator.pushReplacement(
-                                      context,
-                                      MaterialPageRoute<void>(
-                                          builder: (_) =>
-                                              VeyraConversationScreen(
-                                                  name: widget
-                                                      .profile.displayName,
-                                                  pending: true)));
+                              : () async {
+                                  try {
+                                    final request = await ref
+                                        .read(veyraControllerProvider)
+                                        .sendRequest(widget.profile.id,
+                                            _controller.text.trim());
+                                    if (!context.mounted) return;
+                                    Navigator.pushReplacement(
+                                        context,
+                                        MaterialPageRoute<void>(
+                                            builder: (_) =>
+                                                VeyraConversationScreen(
+                                                    name: widget
+                                                        .profile.displayName,
+                                                    pending: true,
+                                                    pendingRequestId:
+                                                        request.id)));
+                                  } catch (error) {
+                                    if (!context.mounted) return;
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(content: Text('$error')),
+                                    );
+                                  }
                                 },
                           icon: const Icon(Icons.send_rounded),
                           label: const Text('Send request'),
@@ -166,136 +184,186 @@ class _VeyraIntroComposerScreenState extends State<VeyraIntroComposerScreen> {
       );
 }
 
-class VeyraConversationScreen extends StatefulWidget {
+class VeyraConversationScreen extends ConsumerStatefulWidget {
   const VeyraConversationScreen(
       {required this.name,
       this.group = false,
       this.pending = false,
+      this.conversationId,
+      this.pendingRequestId,
       super.key});
   final String name;
   final bool group;
   final bool pending;
+  final String? conversationId;
+  final String? pendingRequestId;
   @override
-  State<VeyraConversationScreen> createState() =>
+  ConsumerState<VeyraConversationScreen> createState() =>
       _VeyraConversationScreenState();
 }
 
-class _VeyraConversationScreenState extends State<VeyraConversationScreen> {
+class _VeyraConversationScreenState
+    extends ConsumerState<VeyraConversationScreen> {
   final _composer = TextEditingController();
-  final _messages = <_Message>[
+  final _fallbackMessages = <_Message>[
     const _Message('Hey! How is it going?', false, '9:12 PM'),
     const _Message(
         'It’s going great! I just finished the design.', true, '9:15 PM'),
     const _Message(
         'That looks amazing. Can you send me the file?', false, '9:16 PM')
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    final id = widget.conversationId;
+    if (id != null) {
+      Future<void>.microtask(
+          () => ref.read(veyraControllerProvider).loadMessages(id));
+    }
+  }
+
   @override
   void dispose() {
     _composer.dispose();
     super.dispose();
   }
 
-  void _send() {
+  Future<void> _send() async {
     final text = _composer.text.trim();
     if (text.isEmpty) return;
-    setState(() {
-      _messages.add(_Message(text, true, 'Now'));
-      _composer.clear();
-    });
+    final id = widget.conversationId;
+    if (id == null) {
+      setState(() {
+        _fallbackMessages.add(_Message(text, true, 'Now'));
+        _composer.clear();
+      });
+      return;
+    }
+    _composer.clear();
+    await ref.read(veyraControllerProvider).sendMessage(id, text);
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(
-            toolbarHeight: 82,
-            leadingWidth: 46,
-            titleSpacing: 0,
-            title: InkWell(
-                onTap: widget.group
-                    ? () => Navigator.push(
+  Widget build(BuildContext context) {
+    final controller = ref.watch(veyraControllerProvider);
+    final stored = widget.conversationId == null
+        ? const <ChatMessage>[]
+        : controller.messagesFor(widget.conversationId!);
+    final messages = widget.conversationId == null
+        ? _fallbackMessages
+        : stored
+            .map((message) => _Message(
+                  message.isDeleted ? 'Message deleted' : message.content,
+                  message.senderUserId == controller.activeUser.id,
+                  _messageTime(message.createdAt),
+                  id: message.id,
+                  deliveryStatus: message.deliveryStatus,
+                  isDeleted: message.isDeleted,
+                  createdAt: message.createdAt,
+                ))
+            .toList();
+    return Scaffold(
+      appBar: AppBar(
+          toolbarHeight: 82,
+          leadingWidth: 46,
+          titleSpacing: 0,
+          title: InkWell(
+              onTap: widget.group
+                  ? () => Navigator.push(
+                      context,
+                      MaterialPageRoute<void>(
+                          builder: (_) => GroupDetailsScreen(
+                              name: widget.name,
+                              conversationId: widget.conversationId)))
+                  : null,
+              child: Row(children: [
+                Stack(children: [
+                  CircleAvatar(
+                      radius: 26,
+                      backgroundColor: const Color(0xFF315C51),
+                      child: Text(widget.name[0],
+                          style: const TextStyle(
+                              fontSize: 20, fontWeight: FontWeight.w600))),
+                  if (!widget.group && !widget.pending)
+                    Positioned(
+                        right: 0,
+                        bottom: 1,
+                        child: Container(
+                            width: 13,
+                            height: 13,
+                            decoration: BoxDecoration(
+                                color: VeyraColors.emerald,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                    color: VeyraColors.background, width: 2))))
+                ]),
+                const SizedBox(width: 12),
+                Expanded(
+                    child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                      Text(widget.name,
+                          style: const TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.w800)),
+                      Text(
+                          widget.pending
+                              ? 'Request pending'
+                              : widget.group
+                                  ? '5 members'
+                                  : 'Online',
+                          style: TextStyle(
+                              fontSize: 13,
+                              color: widget.pending
+                                  ? VeyraColors.muted
+                                  : VeyraColors.emerald))
+                    ]))
+              ])),
+          actions: [
+            IconButton(
+                onPressed: widget.pending
+                    ? null
+                    : () => Navigator.push(
+                        context,
+                        MaterialPageRoute<void>(
+                            builder: (_) => VeyraCallScreen(
+                                name: widget.name, video: true))),
+                icon: const Icon(Icons.videocam_outlined, size: 27)),
+            IconButton(
+                onPressed: widget.pending
+                    ? null
+                    : () => Navigator.push(
                         context,
                         MaterialPageRoute<void>(
                             builder: (_) =>
-                                GroupDetailsScreen(name: widget.name)))
-                    : null,
-                child: Row(children: [
-                  Stack(children: [
-                    CircleAvatar(
-                        radius: 26,
-                        backgroundColor: const Color(0xFF315C51),
-                        child: Text(widget.name[0],
-                            style: const TextStyle(
-                                fontSize: 20, fontWeight: FontWeight.w600))),
-                    if (!widget.group && !widget.pending)
-                      Positioned(
-                          right: 0,
-                          bottom: 1,
-                          child: Container(
-                              width: 13,
-                              height: 13,
-                              decoration: BoxDecoration(
-                                  color: VeyraColors.emerald,
-                                  shape: BoxShape.circle,
-                                  border: Border.all(
-                                      color: VeyraColors.background,
-                                      width: 2))))
-                  ]),
-                  const SizedBox(width: 12),
-                  Expanded(
-                      child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                        Text(widget.name,
-                            style: const TextStyle(
-                                fontSize: 18, fontWeight: FontWeight.w800)),
-                        Text(
-                            widget.pending
-                                ? 'Request pending'
-                                : widget.group
-                                    ? '5 members'
-                                    : 'Online',
-                            style: TextStyle(
-                                fontSize: 13,
-                                color: widget.pending
-                                    ? VeyraColors.muted
-                                    : VeyraColors.emerald))
-                      ]))
-                ])),
-            actions: [
-              IconButton(
-                  onPressed: widget.pending
-                      ? null
-                      : () => Navigator.push(
-                          context,
-                          MaterialPageRoute<void>(
-                              builder: (_) => VeyraCallScreen(
-                                  name: widget.name, video: true))),
-                  icon: const Icon(Icons.videocam_outlined, size: 27)),
-              IconButton(
-                  onPressed: widget.pending
-                      ? null
-                      : () => Navigator.push(
-                          context,
-                          MaterialPageRoute<void>(
-                              builder: (_) =>
-                                  VeyraCallScreen(name: widget.name))),
-                  icon: const Icon(Icons.phone_outlined, size: 25)),
-              IconButton(
-                  onPressed: () => _showChatMenu(context),
-                  icon: const Icon(Icons.more_vert_rounded, size: 25))
-            ]),
-        body: Column(children: [
-          if (widget.pending)
-            _PendingBanner(onCancel: () => Navigator.pop(context)),
-          Expanded(
-              child: Stack(children: [
-            const Positioned.fill(child: _ChatWallpaper()),
-            ListView.builder(
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 22),
-                itemCount: _messages.length + 1,
-                itemBuilder: (context, index) {
-                  if (index == 0) {
-                    return Center(
+                                VeyraCallScreen(name: widget.name))),
+                icon: const Icon(Icons.phone_outlined, size: 25)),
+            IconButton(
+                onPressed: () => _showChatMenu(context),
+                icon: const Icon(Icons.more_vert_rounded, size: 25))
+          ]),
+      body: Column(children: [
+        if (widget.pending)
+          _PendingBanner(onCancel: () async {
+            final requestId = widget.pendingRequestId;
+            if (requestId != null) {
+              await ref.read(veyraControllerProvider).cancelRequest(requestId);
+            }
+            if (context.mounted) Navigator.pop(context);
+          }),
+        Expanded(
+            child: Stack(children: [
+          const Positioned.fill(child: _ChatWallpaper()),
+          ListView.builder(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 22),
+              itemCount: messages.length,
+              itemBuilder: (context, index) {
+                final message = messages[index];
+                final showDate = index == 0 ||
+                    !_sameDay(messages[index - 1].createdAt, message.createdAt);
+                return Column(children: [
+                  if (showDate)
+                    Center(
                         child: Container(
                             margin: const EdgeInsets.only(bottom: 20),
                             padding: const EdgeInsets.symmetric(
@@ -305,29 +373,39 @@ class _VeyraConversationScreenState extends State<VeyraConversationScreen> {
                                     VeyraColors.elevated.withValues(alpha: .92),
                                 borderRadius: BorderRadius.circular(20),
                                 border: Border.all(color: VeyraColors.border)),
-                            child: const Text('Today',
-                                style: TextStyle(
+                            child: Text(_dateLabel(message.createdAt),
+                                style: const TextStyle(
                                     color: VeyraColors.text,
                                     fontSize: 12,
-                                    fontWeight: FontWeight.w500))));
-                  }
-                  return _MessageBubble(message: _messages[index - 1]);
-                })
-          ])),
-          if (!widget.pending)
-            _Composer(
-                controller: _composer,
-                onSend: _send,
-                onVoice: () => Navigator.push(
-                    context,
-                    MaterialPageRoute<void>(
-                        builder: (_) => const VoiceRecorderScreen())),
-                onAttach: () => showModalBottomSheet<void>(
-                    context: context,
-                    backgroundColor: VeyraColors.surface,
-                    builder: (_) => const VeyraAttachmentPicker())),
-        ]),
-      );
+                                    fontWeight: FontWeight.w500)))),
+                  _MessageBubble(
+                    message: message,
+                    onDelete: message.id == null ||
+                            widget.conversationId == null
+                        ? null
+                        : () => ref
+                            .read(veyraControllerProvider)
+                            .deleteMessage(widget.conversationId!, message.id!),
+                  ),
+                ]);
+              })
+        ])),
+        if (!widget.pending)
+          _Composer(
+              controller: _composer,
+              onSend: _send,
+              onVoice: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                      builder: (_) => const VoiceRecorderScreen())),
+              onAttach: () => showModalBottomSheet<void>(
+                  context: context,
+                  backgroundColor: VeyraColors.surface,
+                  builder: (_) => const VeyraAttachmentPicker())),
+      ]),
+    );
+  }
+
   void _showChatMenu(BuildContext context) => showModalBottomSheet<void>(
       context: context,
       backgroundColor: VeyraColors.surface,
@@ -353,62 +431,85 @@ class _VeyraConversationScreenState extends State<VeyraConversationScreen> {
                       context,
                       MaterialPageRoute<void>(
                           builder: (_) => widget.group
-                              ? GroupDetailsScreen(name: widget.name)
+                              ? GroupDetailsScreen(
+                                  name: widget.name,
+                                  conversationId: widget.conversationId)
                               : const GroupMediaScreen()));
                 }),
             ListTile(
                 leading: const Icon(Icons.notifications_off_outlined),
-                title: const Text('Mute notifications'),
-                onTap: () => Navigator.pop(context))
+                title: Text(widget.conversationId != null &&
+                        ref
+                                .read(veyraControllerProvider)
+                                .conversationById(widget.conversationId!)
+                                ?.isMuted ==
+                            true
+                    ? 'Unmute notifications'
+                    : 'Mute notifications'),
+                onTap: () async {
+                  final id = widget.conversationId;
+                  if (id != null) {
+                    await ref
+                        .read(veyraControllerProvider)
+                        .toggleConversationMuted(id);
+                  }
+                  if (context.mounted) Navigator.pop(context);
+                })
           ])));
 }
 
-class VeyraGroupsScreen extends StatefulWidget {
+class VeyraGroupsScreen extends ConsumerWidget {
   const VeyraGroupsScreen({super.key});
   @override
-  State<VeyraGroupsScreen> createState() => _VeyraGroupsScreenState();
-}
-
-class _VeyraGroupsScreenState extends State<VeyraGroupsScreen> {
-  @override
-  Widget build(BuildContext context) => Scaffold(
-      appBar: AppBar(
-          title: const Text('Groups',
-              style: TextStyle(fontWeight: FontWeight.w700))),
-      floatingActionButton: FloatingActionButton(
-          onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute<void>(
-                  builder: (_) => const VeyraCreateGroupScreen())),
-          child: const Icon(Icons.group_add_rounded)),
-      body: ListView(padding: const EdgeInsets.all(16), children: [
-        ListTile(
-            onTap: () => Navigator.push(
+  Widget build(BuildContext context, WidgetRef ref) {
+    final groups = ref
+        .watch(veyraControllerProvider)
+        .conversationSummaries
+        .where(
+            (summary) => summary.conversation.type == ConversationType.group);
+    return Scaffold(
+        appBar: AppBar(
+            title: const Text('Groups',
+                style: TextStyle(fontWeight: FontWeight.w700))),
+        floatingActionButton: FloatingActionButton(
+            onPressed: () => Navigator.push(
                 context,
                 MaterialPageRoute<void>(
-                    builder: (_) => const VeyraConversationScreen(
-                        name: 'Design Circle', group: true))),
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            tileColor: VeyraColors.surface,
-            leading: const CircleAvatar(
-                backgroundColor: Color(0xFF4E4667),
-                child: Icon(Icons.groups_rounded)),
-            title: const Text('Design Circle',
-                style: TextStyle(fontWeight: FontWeight.w700)),
-            subtitle: const Text('Maya: I added the latest screens'),
-            trailing: const Icon(Icons.chevron_right_rounded,
-                color: VeyraColors.muted))
-      ]));
+                    builder: (_) => const VeyraCreateGroupScreen())),
+            child: const Icon(Icons.group_add_rounded)),
+        body: ListView(padding: const EdgeInsets.all(16), children: [
+          ...groups.map((group) => ListTile(
+              onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                      builder: (_) => VeyraConversationScreen(
+                          name: group.displayName,
+                          conversationId: group.conversation.id,
+                          group: true))),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+              tileColor: VeyraColors.surface,
+              leading: CircleAvatar(
+                  backgroundColor: Color(group.avatarColor),
+                  child: const Icon(Icons.groups_rounded)),
+              title: Text(group.displayName,
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
+              subtitle: Text(group.lastMessage ?? 'No messages yet'),
+              trailing: const Icon(Icons.chevron_right_rounded,
+                  color: VeyraColors.muted)))
+        ]));
+  }
 }
 
-class VeyraCreateGroupScreen extends StatefulWidget {
+class VeyraCreateGroupScreen extends ConsumerStatefulWidget {
   const VeyraCreateGroupScreen({super.key});
   @override
-  State<VeyraCreateGroupScreen> createState() => _VeyraCreateGroupScreenState();
+  ConsumerState<VeyraCreateGroupScreen> createState() =>
+      _VeyraCreateGroupScreenState();
 }
 
-class _VeyraCreateGroupScreenState extends State<VeyraCreateGroupScreen> {
+class _VeyraCreateGroupScreenState
+    extends ConsumerState<VeyraCreateGroupScreen> {
   final _name = TextEditingController();
   final _members = <String>{};
   @override
@@ -418,44 +519,59 @@ class _VeyraCreateGroupScreenState extends State<VeyraCreateGroupScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-      appBar: AppBar(title: const Text('Create group')),
-      body: ListView(padding: const EdgeInsets.all(20), children: [
-        const CircleAvatar(
-            radius: 34,
-            backgroundColor: VeyraColors.elevated,
-            child:
-                Icon(Icons.add_a_photo_outlined, color: VeyraColors.emerald)),
-        const SizedBox(height: 22),
-        TextField(
-            controller: _name,
-            decoration: const InputDecoration(labelText: 'Group name')),
-        const SizedBox(height: 22),
-        const Text('ADD MEMBERS',
-            style: TextStyle(
-                color: VeyraColors.muted, fontSize: 12, letterSpacing: 1.2)),
-        ...[
-          'Aisha Khan',
-          'Omar Siddiqui',
-          'Maya Chen',
-          'Noor Fatima'
-        ].map((member) => CheckboxListTile(
-            value: _members.contains(member),
-            onChanged: (value) => setState(() =>
-                value == true ? _members.add(member) : _members.remove(member)),
-            title: Text(member),
-            controlAffinity: ListTileControlAffinity.trailing)),
-        const SizedBox(height: 20),
-        FilledButton(
-            onPressed: _name.text.trim().isEmpty || _members.isEmpty
-                ? null
-                : () => Navigator.pushReplacement(
-                    context,
-                    MaterialPageRoute<void>(
-                        builder: (_) => VeyraConversationScreen(
-                            name: _name.text, group: true))),
-            child: const Text('Create group'))
-      ]));
+  Widget build(BuildContext context) {
+    final state = ref.watch(veyraControllerProvider);
+    final candidates = state.allUsers
+        .where((user) => user.id != state.activeUser.id && user.isDiscoverable);
+    return Scaffold(
+        appBar: AppBar(title: const Text('Create group')),
+        body: ListView(padding: const EdgeInsets.all(20), children: [
+          const CircleAvatar(
+              radius: 34,
+              backgroundColor: VeyraColors.elevated,
+              child:
+                  Icon(Icons.add_a_photo_outlined, color: VeyraColors.emerald)),
+          const SizedBox(height: 22),
+          TextField(
+              controller: _name,
+              onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(labelText: 'Group name')),
+          const SizedBox(height: 22),
+          const Text('ADD MEMBERS',
+              style: TextStyle(
+                  color: VeyraColors.muted, fontSize: 12, letterSpacing: 1.2)),
+          ...candidates.map((member) => CheckboxListTile(
+              value: _members.contains(member.id),
+              onChanged: (value) => setState(() => value == true
+                  ? _members.add(member.id)
+                  : _members.remove(member.id)),
+              title: Text(member.displayName),
+              subtitle: Text('@${member.username}'),
+              controlAffinity: ListTileControlAffinity.trailing)),
+          const SizedBox(height: 20),
+          FilledButton(
+              onPressed: _name.text.trim().isEmpty || _members.isEmpty
+                  ? null
+                  : () async {
+                      final name = _name.text.trim();
+                      final id = await ref
+                          .read(veyraControllerProvider)
+                          .createGroup(name, _members.toList());
+                      if (!context.mounted) return;
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute<void>(
+                          builder: (_) => VeyraConversationScreen(
+                            name: name,
+                            conversationId: id,
+                            group: true,
+                          ),
+                        ),
+                      );
+                    },
+              child: const Text('Create group'))
+        ]));
+  }
 }
 
 class VeyraAttachmentPicker extends StatelessWidget {
@@ -1105,11 +1221,12 @@ class _CallControl extends StatelessWidget {
       ]);
 }
 
-class VeyraSettingsScreen extends StatelessWidget {
+class VeyraSettingsScreen extends ConsumerWidget {
   const VeyraSettingsScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final controller = ref.watch(veyraControllerProvider);
     const groups = [
       [
         _SettingsEntry(
@@ -1153,7 +1270,23 @@ class VeyraSettingsScreen extends StatelessWidget {
             ]),
             const SizedBox(height: 24),
             _SettingsProfileCard(
+                user: controller.activeUser,
                 onTap: () => _openSettings(context, 'Profile')),
+            if (kDebugMode) ...[
+              const SizedBox(height: 12),
+              Card(
+                color: VeyraColors.surface,
+                child: ListTile(
+                  leading: const Icon(Icons.developer_mode_rounded,
+                      color: VeyraColors.emerald),
+                  title: const Text('Development account'),
+                  subtitle: Text(
+                      '${controller.activeUser.displayName} · @${controller.activeUser.username}'),
+                  trailing: const Icon(Icons.swap_horiz_rounded),
+                  onTap: () => _showAccountSwitcher(context, ref),
+                ),
+              ),
+            ],
             const SizedBox(height: 18),
             for (final group in groups) ...[
               _SettingsGroup(entries: group),
@@ -1164,6 +1297,39 @@ class VeyraSettingsScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+Future<void> _showAccountSwitcher(BuildContext context, WidgetRef ref) async {
+  final controller = ref.read(veyraControllerProvider);
+  final selected = await showModalBottomSheet<String>(
+    context: context,
+    backgroundColor: VeyraColors.surface,
+    builder: (context) => SafeArea(
+      child: ListView(
+        shrinkWrap: true,
+        children: [
+          const ListTile(
+            title: Text('Development account switcher'),
+            subtitle: Text('Debug builds only · local data'),
+          ),
+          ...controller.allUsers.take(6).map((user) => ListTile(
+                leading: CircleAvatar(
+                  backgroundColor: Color(user.avatarColor),
+                  child: Text(user.displayName[0]),
+                ),
+                title: Text(user.displayName),
+                subtitle: Text('@${user.username}'),
+                trailing: user.id == controller.activeUser.id
+                    ? const Icon(Icons.check_rounded,
+                        color: VeyraColors.emerald)
+                    : null,
+                onTap: () => Navigator.pop(context, user.id),
+              )),
+        ],
+      ),
+    ),
+  );
+  if (selected != null) await controller.switchAccount(selected);
 }
 
 void _openSettings(BuildContext context, String section) => Navigator.push(
@@ -1178,7 +1344,8 @@ class _SettingsEntry {
 }
 
 class _SettingsProfileCard extends StatelessWidget {
-  const _SettingsProfileCard({required this.onTap});
+  const _SettingsProfileCard({required this.user, required this.onTap});
+  final AppUser user;
   final VoidCallback onTap;
 
   @override
@@ -1211,11 +1378,11 @@ class _SettingsProfileCard extends StatelessWidget {
                   Stack(
                     clipBehavior: Clip.none,
                     children: [
-                      const CircleAvatar(
+                      CircleAvatar(
                         radius: 38,
-                        backgroundColor: Color(0xFF315C51),
-                        child: Text('S',
-                            style: TextStyle(
+                        backgroundColor: Color(user.avatarColor),
+                        child: Text(user.displayName[0],
+                            style: const TextStyle(
                                 fontSize: 24, fontWeight: FontWeight.w600)),
                       ),
                       Positioned(
@@ -1236,21 +1403,26 @@ class _SettingsProfileCard extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(width: 24),
-                  const Expanded(
+                  Expanded(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Shaheer Malik',
-                            style: TextStyle(
+                        Text(user.displayName,
+                            style: const TextStyle(
                                 fontSize: 20, fontWeight: FontWeight.w800)),
-                        SizedBox(height: 6),
-                        Text('@shaheer',
-                            style: TextStyle(
+                        const SizedBox(height: 6),
+                        Text('@${user.username}',
+                            style: const TextStyle(
                                 color: VeyraColors.muted, fontSize: 16)),
-                        SizedBox(height: 7),
-                        Text('Available',
-                            style: TextStyle(
+                        const SizedBox(height: 7),
+                        Text(
+                            user.bio?.isNotEmpty == true
+                                ? user.bio!
+                                : 'Available',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
                                 color: VeyraColors.muted, fontSize: 14)),
                       ],
                     ),
@@ -1457,8 +1629,9 @@ class _Composer extends StatelessWidget {
 }
 
 class _MessageBubble extends StatefulWidget {
-  const _MessageBubble({required this.message});
+  const _MessageBubble({required this.message, this.onDelete});
   final _Message message;
+  final Future<void> Function()? onDelete;
 
   @override
   State<_MessageBubble> createState() => _MessageBubbleState();
@@ -1484,6 +1657,13 @@ class _MessageBubbleState extends State<_MessageBubble> {
             title: const Text('Copy message'),
             onTap: () => Navigator.pop(context, 'copy'),
           ),
+          if (widget.message.mine && widget.onDelete != null)
+            ListTile(
+              leading: const Icon(Icons.delete_outline_rounded,
+                  color: VeyraColors.danger),
+              title: const Text('Delete message'),
+              onTap: () => Navigator.pop(context, 'delete'),
+            ),
         ]),
       ),
     );
@@ -1497,6 +1677,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
           const SnackBar(content: Text('Message copied')),
         );
       }
+    } else if (action == 'delete') {
+      await widget.onDelete?.call();
     }
   }
 
@@ -1538,10 +1720,26 @@ class _MessageBubbleState extends State<_MessageBubble> {
                   Text(widget.message.time,
                       style: const TextStyle(
                           fontSize: 11, color: VeyraColors.muted)),
-                  if (widget.message.mine) ...[
+                  if (widget.message.mine && !widget.message.isDeleted) ...[
                     const SizedBox(width: 4),
-                    const Icon(Icons.done_all_rounded,
-                        size: 17, color: Color(0xFF27C8F3)),
+                    Icon(
+                      widget.message.deliveryStatus == DeliveryStatus.sending
+                          ? Icons.schedule_rounded
+                          : widget.message.deliveryStatus ==
+                                  DeliveryStatus.failed
+                              ? Icons.error_outline_rounded
+                              : widget.message.deliveryStatus ==
+                                          DeliveryStatus.delivered ||
+                                      widget.message.deliveryStatus ==
+                                          DeliveryStatus.read
+                                  ? Icons.done_all_rounded
+                                  : Icons.done_rounded,
+                      size: 17,
+                      color:
+                          widget.message.deliveryStatus == DeliveryStatus.failed
+                              ? VeyraColors.danger
+                              : const Color(0xFF27C8F3),
+                    ),
                   ],
                 ]),
               ]))));
@@ -1717,13 +1915,55 @@ class _EmptyState extends StatelessWidget {
 }
 
 class _Message {
-  const _Message(this.text, this.mine, this.time);
+  const _Message(this.text, this.mine, this.time,
+      {this.id,
+      this.deliveryStatus = DeliveryStatus.read,
+      this.isDeleted = false,
+      this.createdAt});
   final String text, time;
   final bool mine;
+  final String? id;
+  final DeliveryStatus deliveryStatus;
+  final bool isDeleted;
+  final DateTime? createdAt;
 }
 
 class _Request {
   const _Request(this.name, this.username, this.message, this.time, this.color);
   final String name, username, message, time;
   final int color;
+}
+
+String _messageTime(DateTime value) {
+  final local = value.toLocal();
+  final hour = local.hour == 0
+      ? 12
+      : local.hour > 12
+          ? local.hour - 12
+          : local.hour;
+  final minute = local.minute.toString().padLeft(2, '0');
+  return '$hour:$minute ${local.hour >= 12 ? 'PM' : 'AM'}';
+}
+
+bool _sameDay(DateTime? first, DateTime? second) {
+  final a = (first ?? DateTime.now()).toLocal();
+  final b = (second ?? DateTime.now()).toLocal();
+  return a.year == b.year && a.month == b.month && a.day == b.day;
+}
+
+String _dateLabel(DateTime? value) {
+  final date = (value ?? DateTime.now()).toLocal();
+  final now = DateTime.now();
+  if (_sameDay(date, now)) return 'Today';
+  if (_sameDay(date, now.subtract(const Duration(days: 1)))) return 'Yesterday';
+  return '${date.day}/${date.month}/${date.year}';
+}
+
+String _relativeTime(DateTime value) {
+  final difference = DateTime.now().difference(value.toLocal());
+  if (difference.inMinutes < 1) return 'Now';
+  if (difference.inHours < 1) return '${difference.inMinutes} min ago';
+  if (difference.inDays < 1) return '${difference.inHours} hr ago';
+  if (difference.inDays == 1) return 'Yesterday';
+  return '${difference.inDays} days ago';
 }

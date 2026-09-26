@@ -1,3 +1,5 @@
+import 'entities.dart';
+
 class PublicProfile {
   const PublicProfile({
     required this.id,
@@ -16,4 +18,19 @@ class PublicProfile {
   final String? bio;
   final bool isContact;
   final bool hasPendingRequest;
+
+  factory PublicProfile.fromUser(
+    AppUser user, {
+    bool isContact = false,
+    bool hasPendingRequest = false,
+  }) =>
+      PublicProfile(
+        id: user.id,
+        displayName: user.displayName,
+        username: user.username,
+        avatarColor: user.avatarColor,
+        bio: user.bio,
+        isContact: isContact,
+        hasPendingRequest: hasPendingRequest,
+      );
 }

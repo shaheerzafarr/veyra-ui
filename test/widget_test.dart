@@ -1,15 +1,42 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:veyra/core/data/local_database.dart';
+import 'package:veyra/core/data/repositories.dart';
+import 'package:veyra/core/state/veyra_controller.dart';
 import 'package:veyra/core/theme/app_theme.dart';
 import 'package:veyra/features/app_ui/veyra_feature_screens.dart';
 import 'package:veyra/main.dart';
 
 void main() {
+  setUpAll(sqfliteFfiInit);
+
+  Future<void> pumpVeyra(WidgetTester tester, Widget child) async {
+    final database = VeyraDatabase(
+      factory: databaseFactoryFfi,
+      path: inMemoryDatabasePath,
+    );
+    final repository = LocalVeyraRepository(database);
+    final controller = VeyraController(
+      users: repository,
+      conversations: repository,
+      messages: repository,
+      requests: repository,
+      settings: repository,
+    );
+    await tester.runAsync(controller.initialize);
+    addTearDown(database.close);
+    await tester.pumpWidget(ProviderScope(
+      overrides: [veyraControllerProvider.overrideWith((ref) => controller)],
+      child: MaterialApp(theme: veyraTheme(), home: child),
+    ));
+  }
+
   testWidgets('Chats filters and New Chat route are available', (tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 844));
-    await tester.pumpWidget(
-        MaterialApp(theme: veyraTheme(), home: const MainNavigation()));
+    await pumpVeyra(tester, const MainNavigation());
 
     expect(find.text('RECENT CONVERSATIONS'), findsOneWidget);
     expect(find.text('Message requests'), findsOneWidget);
@@ -28,8 +55,7 @@ void main() {
   testWidgets('Calls screen filters history and creates a local call link',
       (tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 844));
-    await tester.pumpWidget(
-        MaterialApp(theme: veyraTheme(), home: const MainNavigation()));
+    await pumpVeyra(tester, const MainNavigation());
 
     await tester.tap(find.text('Calls'));
     await tester.pumpAndSettle();
@@ -49,8 +75,7 @@ void main() {
 
   testWidgets('Settings opens a functional Privacy page', (tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 844));
-    await tester.pumpWidget(
-        MaterialApp(theme: veyraTheme(), home: const MainNavigation()));
+    await pumpVeyra(tester, const MainNavigation());
     await tester.tap(find.text('Settings'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Privacy'));
@@ -79,9 +104,7 @@ void main() {
         .instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, null));
     await tester.binding.setSurfaceSize(const Size(390, 844));
-    await tester.pumpWidget(MaterialApp(
-        theme: veyraTheme(),
-        home: const VeyraConversationScreen(name: 'Aisha Khan')));
+    await pumpVeyra(tester, const VeyraConversationScreen(name: 'Aisha Khan'));
 
     await tester.longPress(find.text('Hey! How is it going?'));
     await tester.pumpAndSettle();
@@ -99,9 +122,7 @@ void main() {
   testWidgets('Sent messages show delivery ticks and voice recorder opens',
       (tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 844));
-    await tester.pumpWidget(MaterialApp(
-        theme: veyraTheme(),
-        home: const VeyraConversationScreen(name: 'Aisha Khan')));
+    await pumpVeyra(tester, const VeyraConversationScreen(name: 'Aisha Khan'));
 
     expect(find.byIcon(Icons.done_all_rounded), findsOneWidget);
     await tester.tap(find.byTooltip('Voice message'));
@@ -112,8 +133,7 @@ void main() {
 
   testWidgets('Profile fields save without lifecycle errors', (tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 844));
-    await tester.pumpWidget(
-        MaterialApp(theme: veyraTheme(), home: const MainNavigation()));
+    await pumpVeyra(tester, const MainNavigation());
     await tester.tap(find.text('Settings'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Profile'));

@@ -1,15 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/models/entities.dart';
+import '../../core/state/veyra_controller.dart';
 import '../../core/theme/app_theme.dart';
 
-class SettingsPage extends StatefulWidget {
+class SettingsPage extends ConsumerStatefulWidget {
   const SettingsPage({required this.section, super.key});
   final String section;
   @override
-  State<SettingsPage> createState() => _SettingsPageState();
+  ConsumerState<SettingsPage> createState() => _SettingsPageState();
 }
 
-class _SettingsPageState extends State<SettingsPage> {
+class _SettingsPageState extends ConsumerState<SettingsPage> {
   bool _discoverable = true;
   bool _readReceipts = true;
   bool _messageAlerts = true;
@@ -20,6 +23,44 @@ class _SettingsPageState extends State<SettingsPage> {
   String _displayName = 'Shaheer Malik';
   String _username = '@shaheer';
   String _bio = 'The quieter side of conversation';
+
+  @override
+  void initState() {
+    super.initState();
+    final controller = ref.read(veyraControllerProvider);
+    final stored = controller.settings;
+    final user = controller.activeUser;
+    _discoverable = user.isDiscoverable;
+    _readReceipts = stored.readReceiptsEnabled;
+    _messageAlerts = stored.notificationsEnabled;
+    _callAlerts = stored.callNotificationsEnabled;
+    _wifiOnly = stored.wifiOnlyDownloads;
+    _requestAudience = switch (stored.requestAudience) {
+      'nobody' => 'Nobody',
+      'discovered' => 'People I discover',
+      _ => 'Everyone on Veyra',
+    };
+    _textScale = stored.fontScale;
+    _displayName = user.displayName;
+    _username = '@${user.username}';
+    _bio = user.bio ?? '';
+  }
+
+  Future<void> _savePreferences() =>
+      ref.read(veyraControllerProvider).updateSettings(AppSettings(
+            userId: ref.read(veyraControllerProvider).activeUser.id,
+            theme: 'dark',
+            notificationsEnabled: _messageAlerts,
+            callNotificationsEnabled: _callAlerts,
+            readReceiptsEnabled: _readReceipts,
+            requestAudience: switch (_requestAudience) {
+              'Nobody' => 'nobody',
+              'People I discover' => 'discovered',
+              _ => 'everyone',
+            },
+            wifiOnlyDownloads: _wifiOnly,
+            fontScale: _textScale,
+          ));
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -53,15 +94,35 @@ class _SettingsPageState extends State<SettingsPage> {
                 style: const TextStyle(color: VeyraColors.emerald))),
         const SizedBox(height: 20),
         _section('PUBLIC PROFILE'),
-        _editable('Display name', _displayName,
-            (value) => setState(() => _displayName = value)),
-        _editable('Username', _username,
-            (value) => setState(() => _username = value)),
-        _editable('Bio', _bio, (value) => setState(() => _bio = value)),
+        _editable('Display name', _displayName, (value) async {
+          final error = await ref
+              .read(veyraControllerProvider)
+              .updateProfile(displayName: value);
+          if (error == null) setState(() => _displayName = value);
+          return error;
+        }),
+        _editable('Username', _username, (value) async {
+          final error = await ref
+              .read(veyraControllerProvider)
+              .updateProfile(username: value);
+          if (error == null) {
+            setState(
+                () => _username = value.startsWith('@') ? value : '@$value');
+          }
+          return error;
+        }),
+        _editable('Bio', _bio, (value) async {
+          final error =
+              await ref.read(veyraControllerProvider).updateProfile(bio: value);
+          if (error == null) setState(() => _bio = value);
+          return error;
+        }),
         const SizedBox(height: 20),
         _section('PRIVATE ACCOUNT'),
-        const _SettingRow(
-            'Email address', 'shaheer@example.com', Icons.mail_outline_rounded),
+        _SettingRow(
+            'Email address',
+            ref.read(veyraControllerProvider).activeUser.email,
+            Icons.mail_outline_rounded),
         const Padding(
             padding: EdgeInsets.all(12),
             child: Text(
@@ -76,7 +137,12 @@ class _SettingsPageState extends State<SettingsPage> {
           subtitle:
               const Text('Let registered users find your name and username'),
           value: _discoverable,
-          onChanged: (value) => setState(() => _discoverable = value),
+          onChanged: (value) async {
+            setState(() => _discoverable = value);
+            await ref
+                .read(veyraControllerProvider)
+                .updateProfile(isDiscoverable: value);
+          },
         ),
         ListTile(
           title: const Text('Who can send requests'),
@@ -103,6 +169,7 @@ class _SettingsPageState extends State<SettingsPage> {
             );
             if (chosen != null && mounted) {
               setState(() => _requestAudience = chosen);
+              await _savePreferences();
             }
           },
         ),
@@ -112,7 +179,10 @@ class _SettingsPageState extends State<SettingsPage> {
             title: const Text('Read receipts'),
             subtitle: const Text('Show when you have read a message'),
             value: _readReceipts,
-            onChanged: (value) => setState(() => _readReceipts = value)),
+            onChanged: (value) {
+              setState(() => _readReceipts = value);
+              _savePreferences();
+            }),
         ListTile(
             leading: const Icon(Icons.block_rounded, color: VeyraColors.danger),
             title: const Text('Blocked accounts'),
@@ -130,12 +200,18 @@ class _SettingsPageState extends State<SettingsPage> {
             title: const Text('Messages'),
             subtitle: const Text('New messages and requests'),
             value: _messageAlerts,
-            onChanged: (value) => setState(() => _messageAlerts = value)),
+            onChanged: (value) {
+              setState(() => _messageAlerts = value);
+              _savePreferences();
+            }),
         SwitchListTile(
             title: const Text('Calls'),
             subtitle: const Text('Incoming voice and video calls'),
             value: _callAlerts,
-            onChanged: (value) => setState(() => _callAlerts = value)),
+            onChanged: (value) {
+              setState(() => _callAlerts = value);
+              _savePreferences();
+            }),
         const _SettingRow('Sound', 'Veyra default', Icons.music_note_outlined),
       ];
 
@@ -153,7 +229,10 @@ class _SettingsPageState extends State<SettingsPage> {
                 max: 1.3,
                 divisions: 5,
                 label: '${(_textScale * 100).round()}%',
-                onChanged: (value) => setState(() => _textScale = value))),
+                onChanged: (value) {
+                  setState(() => _textScale = value);
+                  _savePreferences();
+                })),
         Center(
             child: Text('A calm place to talk.',
                 textScaler: TextScaler.linear(_textScale),
@@ -185,7 +264,10 @@ class _SettingsPageState extends State<SettingsPage> {
         SwitchListTile(
             title: const Text('Download on Wi-Fi only'),
             value: _wifiOnly,
-            onChanged: (value) => setState(() => _wifiOnly = value)),
+            onChanged: (value) {
+              setState(() => _wifiOnly = value);
+              _savePreferences();
+            }),
         const _SettingRow(
             'Photos and videos', '116 MB', Icons.photo_library_outlined),
         const _SettingRow('Documents', '74 MB', Icons.description_outlined),
@@ -238,7 +320,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 fontWeight: FontWeight.w700)),
       );
 
-  Widget _editable(String label, String value, ValueChanged<String> onSave) =>
+  Widget _editable(String label, String value,
+          Future<String?> Function(String) onSave) =>
       ListTile(
         title: Text(label),
         subtitle: Text(value),
@@ -259,11 +342,18 @@ class _SettingsPageState extends State<SettingsPage> {
                           onPressed: () => Navigator.pop(context),
                           child: const Text('Cancel')),
                       FilledButton(
-                          onPressed: () {
+                          onPressed: () async {
                             final trimmed = updated.trim();
                             if (trimmed.isEmpty) return;
-                            onSave(trimmed);
-                            Navigator.pop(context);
+                            final error = await onSave(trimmed);
+                            if (!context.mounted) return;
+                            if (error == null) {
+                              Navigator.pop(context);
+                            } else {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(error)),
+                              );
+                            }
                           },
                           child: const Text('Save')),
                     ],

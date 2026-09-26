@@ -1,18 +1,21 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/mock_data/mock_profiles.dart';
+import '../../core/models/entities.dart';
+import '../../core/models/public_profile.dart';
+import '../../core/state/veyra_controller.dart';
 import '../../core/theme/app_theme.dart';
 import '../app_ui/veyra_feature_screens.dart';
 import '../discovery/discover_people_screen.dart';
 
-class ChatHomeScreen extends StatefulWidget {
+class ChatHomeScreen extends ConsumerStatefulWidget {
   const ChatHomeScreen({super.key});
 
   @override
-  State<ChatHomeScreen> createState() => _ChatHomeScreenState();
+  ConsumerState<ChatHomeScreen> createState() => _ChatHomeScreenState();
 }
 
-class _ChatHomeScreenState extends State<ChatHomeScreen> {
+class _ChatHomeScreenState extends ConsumerState<ChatHomeScreen> {
   final _search = TextEditingController();
   String _filter = 'All';
 
@@ -40,8 +43,12 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final state = ref.watch(veyraControllerProvider);
+    final chats = <_ChatPreview>[..._chats]
+      ..clear()
+      ..addAll(state.conversationSummaries.map(_ChatPreview.fromSummary));
     final query = _search.text.trim().toLowerCase();
-    final visible = _chats.where((chat) {
+    final visible = chats.where((chat) {
       final filterMatch = switch (_filter) {
         'Unread' => chat.unread > 0,
         'Groups' => chat.group,
@@ -116,6 +123,8 @@ class _ChatHomeScreenState extends State<ChatHomeScreen> {
             const _ConversationBanner(),
             const SizedBox(height: 14),
             _RequestsPanel(
+              incomingCount: state.incomingRequests.length,
+              outgoingCount: state.outgoingRequests.length,
               onIncoming: () => Navigator.push(
                 context,
                 MaterialPageRoute<void>(
@@ -345,10 +354,17 @@ class _MessageBubble extends StatelessWidget {
 }
 
 class _RequestsPanel extends StatelessWidget {
-  const _RequestsPanel({required this.onIncoming, required this.onOutgoing});
+  const _RequestsPanel({
+    required this.onIncoming,
+    required this.onOutgoing,
+    required this.incomingCount,
+    required this.outgoingCount,
+  });
 
   final VoidCallback onIncoming;
   final VoidCallback onOutgoing;
+  final int incomingCount;
+  final int outgoingCount;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -361,15 +377,19 @@ class _RequestsPanel extends StatelessWidget {
           _RequestRow(
               icon: Icons.markunread_mailbox_outlined,
               label: 'Message requests',
-              detail: '2 new introductions',
-              count: 2,
+              detail: incomingCount == 1
+                  ? '1 new introduction'
+                  : '$incomingCount new introductions',
+              count: incomingCount == 0 ? null : incomingCount,
               showPeople: true,
               onTap: onIncoming),
           const Divider(height: 1, indent: 72, endIndent: 18),
           _RequestRow(
               icon: Icons.schedule_rounded,
               label: 'Sent requests',
-              detail: 'Waiting for a reply',
+              detail: outgoingCount == 1
+                  ? '1 waiting for a reply'
+                  : '$outgoingCount waiting for a reply',
               onTap: onOutgoing),
         ]),
       );
@@ -494,16 +514,43 @@ class _RecentHeading extends StatelessWidget {
 
 class _ChatPreview {
   const _ChatPreview(this.name, this.preview, this.time, this.color,
-      {this.unread = 0,
+      {this.conversationId,
+      this.unread = 0,
       this.pinned = false,
       this.group = false,
       this.online = false,
       this.muted = false,
       this.voice = false});
 
+  final String? conversationId;
   final String name, preview, time;
   final int color, unread;
   final bool pinned, group, online, muted, voice;
+
+  factory _ChatPreview.fromSummary(ConversationSummary summary) {
+    final local = summary.conversation.lastMessageAt?.toLocal();
+    final age = local == null ? null : DateTime.now().difference(local).inDays;
+    final time = local == null
+        ? ''
+        : age == 0
+            ? '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}'
+            : age == 1
+                ? 'Yesterday'
+                : '${local.day}/${local.month}';
+    final preview = summary.lastMessage ?? 'No messages yet';
+    return _ChatPreview(
+      summary.displayName,
+      preview,
+      time,
+      summary.avatarColor,
+      conversationId: summary.conversation.id,
+      unread: summary.unreadCount,
+      pinned: summary.isPinned,
+      group: summary.conversation.type == ConversationType.group,
+      muted: summary.isMuted,
+      voice: preview.startsWith('Voice message'),
+    );
+  }
 }
 
 class _ChatRow extends StatelessWidget {
@@ -523,8 +570,11 @@ class _ChatRow extends StatelessWidget {
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute<void>(
-                builder: (_) =>
-                    VeyraConversationScreen(name: chat.name, group: chat.group),
+                builder: (_) => VeyraConversationScreen(
+                  name: chat.name,
+                  group: chat.group,
+                  conversationId: chat.conversationId,
+                ),
               ),
             ),
             child: Padding(
@@ -608,63 +658,72 @@ class _ChatRow extends StatelessWidget {
       );
 }
 
-class NewChatScreen extends StatelessWidget {
+class NewChatScreen extends ConsumerWidget {
   const NewChatScreen({super.key});
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: const Text('New chat')),
-        body: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            TextField(
-              readOnly: true,
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute<void>(
-                    builder: (_) => const DiscoverPeopleScreen()),
-              ),
-              decoration: const InputDecoration(
-                  hintText: 'Search people by name or @username',
-                  prefixIcon: Icon(Icons.search_rounded)),
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(veyraControllerProvider);
+    final profiles = state.allUsers
+        .where((user) => user.id != state.activeUser.id && user.isDiscoverable)
+        .map((user) => PublicProfile.fromUser(
+              user,
+              isContact: state.conversationWith(user.id) != null,
+              hasPendingRequest: state.outgoingRequests
+                  .any((request) => request.otherUser.id == user.id),
+            ));
+    return Scaffold(
+      appBar: AppBar(title: const Text('New chat')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          TextField(
+            readOnly: true,
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(
+                  builder: (_) => const DiscoverPeopleScreen()),
             ),
-            const SizedBox(height: 10),
-            ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: Color(0xFF1B3F35),
-                child:
-                    Icon(Icons.group_add_rounded, color: VeyraColors.emerald),
-              ),
-              title: const Text('New group',
-                  style: TextStyle(color: VeyraColors.emerald)),
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute<void>(
-                    builder: (_) => const VeyraCreateGroupScreen()),
-              ),
+            decoration: const InputDecoration(
+                hintText: 'Search people by name or @username',
+                prefixIcon: Icon(Icons.search_rounded)),
+          ),
+          const SizedBox(height: 10),
+          ListTile(
+            leading: const CircleAvatar(
+              backgroundColor: Color(0xFF1B3F35),
+              child: Icon(Icons.group_add_rounded, color: VeyraColors.emerald),
             ),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(8, 16, 8, 8),
-              child: Text('PEOPLE ON VEYRA',
-                  style: TextStyle(
-                      color: VeyraColors.muted,
-                      fontSize: 11,
-                      letterSpacing: 1.1)),
+            title: const Text('New group',
+                style: TextStyle(color: VeyraColors.emerald)),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(
+                  builder: (_) => const VeyraCreateGroupScreen()),
             ),
-            ...discoverableProfiles
-                .map((profile) => PublicProfileTile(profile: profile)),
-          ],
-        ),
-      );
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(8, 16, 8, 8),
+            child: Text('PEOPLE ON VEYRA',
+                style: TextStyle(
+                    color: VeyraColors.muted,
+                    fontSize: 11,
+                    letterSpacing: 1.1)),
+          ),
+          ...profiles.map((profile) => PublicProfileTile(profile: profile)),
+        ],
+      ),
+    );
+  }
 }
 
-class OutgoingRequestsScreen extends StatelessWidget {
+class OutgoingRequestsScreen extends ConsumerWidget {
   const OutgoingRequestsScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final pending =
-        discoverableProfiles.where((person) => person.hasPendingRequest);
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(veyraControllerProvider);
+    final pending = state.outgoingRequests;
     return Scaffold(
       appBar: AppBar(title: const Text('Sent requests')),
       body: ListView(
@@ -676,20 +735,32 @@ class OutgoingRequestsScreen extends StatelessWidget {
                 'One introduction can be sent until your request is accepted.',
                 style: TextStyle(color: VeyraColors.muted)),
           ),
-          ...pending.map((profile) => Card(
-                color: VeyraColors.surface,
-                child: ListTile(
-                  leading: ProfileAvatar(profile: profile),
-                  title: Text(profile.displayName),
-                  subtitle: Text('@${profile.username} · Request pending'),
-                  trailing: const Icon(Icons.chevron_right_rounded),
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute<void>(
-                        builder: (_) => PublicProfileScreen(profile: profile)),
-                  ),
+          ...pending.map((view) {
+            final profile = PublicProfile.fromUser(
+              view.otherUser,
+              hasPendingRequest: true,
+            );
+            return Card(
+              color: VeyraColors.surface,
+              child: ListTile(
+                leading: ProfileAvatar(profile: profile),
+                title: Text(profile.displayName),
+                subtitle: Text('@${profile.username} · Request pending'),
+                trailing: IconButton(
+                  tooltip: 'Cancel request',
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => ref
+                      .read(veyraControllerProvider)
+                      .cancelRequest(view.request.id),
                 ),
-              )),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                      builder: (_) => PublicProfileScreen(profile: profile)),
+                ),
+              ),
+            );
+          }),
         ],
       ),
     );

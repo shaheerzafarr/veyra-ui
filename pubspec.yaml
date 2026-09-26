@@ -1,5 +1,5 @@
 name: veyra
-description: A UI-only prototype for Veyra private messaging.
+description: A local-first prototype for Veyra private messaging.
 publish_to: none
 version: 0.1.0+1
 
@@ -9,11 +9,16 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_riverpod: ^2.5.1
+  path: ^1.9.0
+  sqflite: ^2.3.3+1
+  uuid: ^4.4.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
+  sqflite_common_ffi: ^2.3.3
 
 flutter:
   uses-material-design: true

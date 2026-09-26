@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/models/entities.dart';
+import '../../core/state/veyra_controller.dart';
 import '../../core/theme/app_theme.dart';
 
 class ConversationSearchScreen extends StatefulWidget {
@@ -62,20 +65,32 @@ class _ConversationSearchScreenState extends State<ConversationSearchScreen> {
   }
 }
 
-class GroupDetailsScreen extends StatefulWidget {
-  const GroupDetailsScreen({required this.name, super.key});
+class GroupDetailsScreen extends ConsumerStatefulWidget {
+  const GroupDetailsScreen(
+      {required this.name, this.conversationId, super.key});
   final String name;
+  final String? conversationId;
   @override
-  State<GroupDetailsScreen> createState() => _GroupDetailsScreenState();
+  ConsumerState<GroupDetailsScreen> createState() => _GroupDetailsScreenState();
 }
 
-class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
-  final _members = <String>[
-    'Shaheer Malik',
-    'Maya Chen',
-    'Aisha Khan',
-    'Omar Siddiqui'
-  ];
+class _GroupDetailsScreenState extends ConsumerState<GroupDetailsScreen> {
+  List<AppUser> _members = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    Future<void>.microtask(_loadMembers);
+  }
+
+  Future<void> _loadMembers() async {
+    final id = widget.conversationId;
+    if (id == null) return;
+    final members =
+        await ref.read(veyraControllerProvider).groupParticipants(id);
+    if (mounted) setState(() => _members = members);
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
         appBar: AppBar(title: const Text('Group info')),
@@ -113,26 +128,32 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
                         letterSpacing: 1.2))),
             TextButton.icon(
               onPressed: () async {
-                final person = await showModalBottomSheet<String>(
+                final controller = ref.read(veyraControllerProvider);
+                final candidates = controller.allUsers
+                    .where((user) =>
+                        !_members.any((member) => member.id == user.id))
+                    .toList();
+                final person = await showModalBottomSheet<AppUser>(
                   context: context,
                   backgroundColor: VeyraColors.surface,
                   builder: (context) => SafeArea(
                       child: Column(
                           mainAxisSize: MainAxisSize.min,
-                          children: [
-                            'Sana Ahmed',
-                            'Leila Hassan',
-                            'Noor Fatima'
-                          ]
-                              .map((name) => ListTile(
-                                  title: Text(name),
+                          children: candidates
+                              .map((user) => ListTile(
+                                  title: Text(user.displayName),
+                                  subtitle: Text('@${user.username}'),
                                   leading: const Icon(
                                       Icons.person_add_alt_1_rounded),
-                                  onTap: () => Navigator.pop(context, name)))
+                                  onTap: () => Navigator.pop(context, user)))
                               .toList())),
                 );
-                if (person != null && mounted) {
-                  setState(() => _members.add(person));
+                if (person != null &&
+                    mounted &&
+                    widget.conversationId != null) {
+                  await controller.addGroupMember(
+                      widget.conversationId!, person.id);
+                  await _loadMembers();
                 }
               },
               icon: const Icon(Icons.add_rounded),
@@ -141,20 +162,29 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
           ]),
           ..._members.map((person) => ListTile(
                 leading: CircleAvatar(
-                    backgroundColor: const Color(0xFF315C51),
-                    child: Text(person[0])),
-                title: Text(person),
-                subtitle: person == 'Shaheer Malik'
-                    ? const Text('Admin · You')
-                    : null,
-                trailing: person == 'Shaheer Malik'
-                    ? null
-                    : IconButton(
-                        tooltip: 'Remove $person',
-                        onPressed: () =>
-                            setState(() => _members.remove(person)),
-                        icon: const Icon(Icons.more_horiz_rounded),
-                      ),
+                    backgroundColor: Color(person.avatarColor),
+                    child: Text(person.displayName[0])),
+                title: Text(person.displayName),
+                subtitle:
+                    person.id == ref.read(veyraControllerProvider).activeUser.id
+                        ? const Text('Admin · You')
+                        : null,
+                trailing:
+                    person.id == ref.read(veyraControllerProvider).activeUser.id
+                        ? null
+                        : IconButton(
+                            tooltip: 'Remove ${person.displayName}',
+                            onPressed: widget.conversationId == null
+                                ? null
+                                : () async {
+                                    await ref
+                                        .read(veyraControllerProvider)
+                                        .removeGroupMember(
+                                            widget.conversationId!, person.id);
+                                    await _loadMembers();
+                                  },
+                            icon: const Icon(Icons.more_horiz_rounded),
+                          ),
               )),
           const SizedBox(height: 18),
           OutlinedButton.icon(
@@ -169,9 +199,16 @@ class _GroupDetailsScreenState extends State<GroupDetailsScreen> {
                               onPressed: () => Navigator.pop(context),
                               child: const Text('Stay')),
                           TextButton(
-                              onPressed: () {
-                                Navigator.pop(context);
-                                Navigator.pop(context);
+                              onPressed: () async {
+                                if (widget.conversationId != null) {
+                                  await ref
+                                      .read(veyraControllerProvider)
+                                      .leaveGroup(widget.conversationId!);
+                                }
+                                if (!context.mounted) return;
+                                Navigator.of(context)
+                                  ..pop()
+                                  ..pop();
                               },
                               child: const Text('Leave',
                                   style: TextStyle(color: VeyraColors.danger))),

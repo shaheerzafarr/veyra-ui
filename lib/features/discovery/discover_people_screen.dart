@@ -1,23 +1,33 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/mock_data/mock_profiles.dart';
 import '../../core/models/public_profile.dart';
+import '../../core/state/veyra_controller.dart';
 import '../../core/theme/app_theme.dart';
 import '../app_ui/veyra_feature_screens.dart';
 
-class DiscoverPeopleScreen extends StatefulWidget {
+class DiscoverPeopleScreen extends ConsumerStatefulWidget {
   const DiscoverPeopleScreen({super.key});
 
   @override
-  State<DiscoverPeopleScreen> createState() => _DiscoverPeopleScreenState();
+  ConsumerState<DiscoverPeopleScreen> createState() =>
+      _DiscoverPeopleScreenState();
 }
 
-class _DiscoverPeopleScreenState extends State<DiscoverPeopleScreen> {
+class _DiscoverPeopleScreenState extends ConsumerState<DiscoverPeopleScreen> {
   final _searchController = TextEditingController();
   Timer? _debounce;
   var _loading = false;
+  var _results = <PublicProfile>[];
+  var _searchVersion = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    Future<void>.microtask(() => _runSearch(''));
+  }
 
   @override
   void dispose() {
@@ -29,27 +39,25 @@ class _DiscoverPeopleScreenState extends State<DiscoverPeopleScreen> {
   void _onSearchChanged(String value) {
     _debounce?.cancel();
     setState(() => _loading = value.trim().isNotEmpty);
-    _debounce = Timer(const Duration(milliseconds: 300), () {
-      if (mounted) setState(() => _loading = false);
-    });
+    _debounce =
+        Timer(const Duration(milliseconds: 180), () => _runSearch(value));
   }
 
-  List<PublicProfile> get _results {
-    final query =
-        _searchController.text.trim().toLowerCase().replaceFirst('@', '');
-    if (query.isEmpty) return discoverableProfiles.take(5).toList();
-    return discoverableProfiles
-        .where((person) =>
-            person.displayName.toLowerCase().contains(query) ||
-            person.username.toLowerCase().contains(query))
-        .toList();
+  Future<void> _runSearch(String query) async {
+    final version = ++_searchVersion;
+    final results =
+        await ref.read(veyraControllerProvider).searchProfiles(query);
+    if (!mounted || version != _searchVersion) return;
+    setState(() {
+      _results = results;
+      _loading = false;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final query = _searchController.text.trim();
     final results = _results;
-    final isError = query.toLowerCase() == 'error';
     return Scaffold(
       appBar: AppBar(
           title: const Text('Discover people',
@@ -81,23 +89,16 @@ class _DiscoverPeopleScreenState extends State<DiscoverPeopleScreen> {
                 ),
               ),
             ),
-            Expanded(child: _buildBody(query, results, isError)),
+            Expanded(child: _buildBody(query, results)),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildBody(String query, List<PublicProfile> results, bool isError) {
+  Widget _buildBody(String query, List<PublicProfile> results) {
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
-    }
-    if (isError) {
-      return const _DiscoveryState(
-        icon: Icons.cloud_off_rounded,
-        title: 'Couldn\'t search right now',
-        subtitle: 'Please check your connection and try again.',
-      );
     }
     if (results.isEmpty) {
       return const _DiscoveryState(
@@ -162,62 +163,79 @@ class PublicProfileTile extends StatelessWidget {
       );
 }
 
-class PublicProfileScreen extends StatelessWidget {
+class PublicProfileScreen extends ConsumerWidget {
   const PublicProfileScreen({required this.profile, super.key});
 
   final PublicProfile profile;
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(),
-        body: SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              children: [
+  Widget build(BuildContext context, WidgetRef ref) {
+    final controller = ref.watch(veyraControllerProvider);
+    final conversation = controller.conversationWith(profile.id);
+    final hasOutgoing = controller.outgoingRequests
+        .any((view) => view.otherUser.id == profile.id);
+    return Scaffold(
+      appBar: AppBar(),
+      body: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            children: [
+              const SizedBox(height: 16),
+              ProfileAvatar(profile: profile, radius: 48),
+              const SizedBox(height: 18),
+              Text(profile.displayName,
+                  style: const TextStyle(
+                      fontSize: 26, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 4),
+              Text('@${profile.username}',
+                  style: const TextStyle(
+                      color: VeyraColors.emerald, fontWeight: FontWeight.w600)),
+              if (profile.bio != null) ...[
                 const SizedBox(height: 16),
-                ProfileAvatar(profile: profile, radius: 48),
-                const SizedBox(height: 18),
-                Text(profile.displayName,
-                    style: const TextStyle(
-                        fontSize: 26, fontWeight: FontWeight.w700)),
-                const SizedBox(height: 4),
-                Text('@${profile.username}',
-                    style: const TextStyle(
-                        color: VeyraColors.emerald,
-                        fontWeight: FontWeight.w600)),
-                if (profile.bio != null) ...[
-                  const SizedBox(height: 16),
-                  Text(profile.bio!,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: VeyraColors.muted)),
-                ],
-                const Spacer(),
-                if (profile.isContact)
-                  const _ProfileStatus(
-                      icon: Icons.chat_bubble_rounded, label: 'In your chats')
-                else if (profile.hasPendingRequest)
-                  const _ProfileStatus(
-                      icon: Icons.schedule_rounded, label: 'Request pending')
-                else
-                  FilledButton.icon(
-                    onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) =>
-                            VeyraIntroComposerScreen(profile: profile),
+                Text(profile.bio!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: VeyraColors.muted)),
+              ],
+              const Spacer(),
+              if (conversation != null)
+                FilledButton.icon(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => VeyraConversationScreen(
+                        name: conversation.displayName,
+                        conversationId: conversation.conversation.id,
                       ),
                     ),
-                    icon: const Icon(Icons.send_rounded),
-                    label: const Text('Message'),
-                    style: FilledButton.styleFrom(
-                        minimumSize: const Size.fromHeight(56)),
                   ),
-              ],
-            ),
+                  icon: const Icon(Icons.chat_bubble_rounded),
+                  label: const Text('Open chat'),
+                  style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(56)),
+                )
+              else if (hasOutgoing || profile.hasPendingRequest)
+                const _ProfileStatus(
+                    icon: Icons.schedule_rounded, label: 'Request pending')
+              else
+                FilledButton.icon(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) =>
+                          VeyraIntroComposerScreen(profile: profile),
+                    ),
+                  ),
+                  icon: const Icon(Icons.send_rounded),
+                  label: const Text('Message'),
+                  style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(56)),
+                ),
+            ],
           ),
         ),
-      );
+      ),
+    );
+  }
 }
 
 class ProfileAvatar extends StatelessWidget {
