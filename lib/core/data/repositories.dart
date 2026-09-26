@@ -613,6 +613,111 @@ class LocalVeyraRepository
         conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
+  Future<void> cacheUser(AppUser user) async {
+    await (await _db).insert(
+      'users',
+      _userToRow(user),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> cacheRequestViews(List<ContactRequestView> views) async {
+    final db = await _db;
+    await db.transaction((txn) async {
+      for (final view in views) {
+        await txn.insert(
+          'users',
+          _userToRow(view.otherUser),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        await txn.insert(
+          'contact_requests',
+          _requestToRow(view.request),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    });
+  }
+
+  Future<void> cacheAcceptedConversation(
+    ContactRequestView view,
+    String conversationId,
+    String currentUserId,
+  ) async {
+    final db = await _db;
+    final now = DateTime.now().toUtc().toIso8601String();
+    await db.transaction((txn) async {
+      await txn.update(
+        'contact_requests',
+        {'status': 'accepted', 'updated_at': now},
+        where: 'id = ?',
+        whereArgs: [view.request.id],
+      );
+      await txn.insert(
+        'conversations',
+        {
+          'id': conversationId,
+          'type': 'direct',
+          'created_at': view.request.createdAt.toUtc().toIso8601String(),
+          'updated_at': now,
+          'last_message_at': view.request.createdAt.toUtc().toIso8601String(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+      for (final userId in [
+        view.request.senderUserId,
+        view.request.recipientUserId
+      ]) {
+        await txn.insert(
+          'conversation_participants',
+          {
+            'conversation_id': conversationId,
+            'user_id': userId,
+            'role': 'member',
+            'joined_at': now,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+        await txn.insert(
+          'conversation_user_state',
+          {
+            'conversation_id': conversationId,
+            'user_id': userId,
+            'last_read_at': userId == currentUserId ? now : null,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+      await txn.insert(
+        'messages',
+        {
+          'id': const Uuid().v4(),
+          'conversation_id': conversationId,
+          'sender_user_id': view.request.senderUserId,
+          'type': 'text',
+          'content': view.request.introductoryMessage,
+          'created_at': view.request.createdAt.toUtc().toIso8601String(),
+          'updated_at': now,
+          'delivery_status': 'read',
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    });
+  }
+
+  Map<String, Object?> _userToRow(AppUser user) => {
+        'id': user.id,
+        'email': user.email,
+        'username': user.username,
+        'display_name': user.displayName,
+        'avatar': user.avatar,
+        'avatar_color': user.avatarColor,
+        'bio': user.bio,
+        'is_discoverable': user.isDiscoverable ? 1 : 0,
+        'created_at': user.createdAt.toUtc().toIso8601String(),
+        'updated_at': user.updatedAt.toUtc().toIso8601String(),
+      };
+
   AppUser _userFromRow(Map<String, Object?> row) => AppUser(
         id: row['id']! as String,
         email: row['email']! as String,

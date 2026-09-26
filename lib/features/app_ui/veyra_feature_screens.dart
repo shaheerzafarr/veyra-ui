@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/models/entities.dart';
 import '../../core/models/public_profile.dart';
+import '../../core/state/auth_controller.dart';
 import '../../core/state/veyra_controller.dart';
 import '../../core/theme/app_theme.dart';
 import '../discovery/discover_people_screen.dart';
@@ -1222,7 +1223,9 @@ class _CallControl extends StatelessWidget {
 }
 
 class VeyraSettingsScreen extends ConsumerWidget {
-  const VeyraSettingsScreen({super.key});
+  const VeyraSettingsScreen({this.onLoggedOut, super.key});
+
+  final VoidCallback? onLoggedOut;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1292,6 +1295,15 @@ class VeyraSettingsScreen extends ConsumerWidget {
               _SettingsGroup(entries: group),
               const SizedBox(height: 16),
             ],
+            if (onLoggedOut != null)
+              OutlinedButton.icon(
+                onPressed: () async {
+                  await ref.read(authControllerProvider).logout();
+                  onLoggedOut?.call();
+                },
+                icon: const Icon(Icons.logout_rounded),
+                label: const Text('Log out'),
+              ),
           ],
         ),
       ),

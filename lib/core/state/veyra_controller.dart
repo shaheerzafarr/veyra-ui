@@ -226,8 +226,8 @@ class VeyraController extends ChangeNotifier {
     final normalizedUsername =
         username?.trim().replaceFirst(RegExp(r'^@'), '').toLowerCase();
     if (normalizedUsername != null &&
-        !RegExp(r'^[a-z0-9_]{3,30}$').hasMatch(normalizedUsername)) {
-      return 'Use 3–30 letters, numbers, or underscores.';
+        !RegExp(r'^[a-z0-9._]{3,30}$').hasMatch(normalizedUsername)) {
+      return 'Use 3–30 letters, numbers, dots, or underscores.';
     }
     if (normalizedUsername != null &&
         !await _users.isUsernameAvailable(normalizedUsername, activeUser.id)) {

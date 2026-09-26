@@ -3,6 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/data/local_database.dart';
 import 'core/data/repositories.dart';
+import 'core/data/server_identity_repository.dart';
+import 'core/network/api_client.dart';
+import 'core/network/remote_data_sources.dart';
+import 'core/network/token_storage.dart';
+import 'core/state/auth_controller.dart';
 import 'core/state/veyra_controller.dart';
 import 'core/theme/app_theme.dart';
 import 'features/app_ui/veyra_feature_screens.dart';
@@ -12,16 +17,46 @@ import 'features/discovery/discover_people_screen.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final repository = LocalVeyraRepository(VeyraDatabase());
+  final tokenStorage = SecureTokenStorage();
+  final api = ApiClient(
+    baseUrl: const String.fromEnvironment(
+      'VEYRA_API_URL',
+      defaultValue: 'http://10.0.2.2:8000',
+    ),
+    tokens: tokenStorage,
+  );
+  final userRemote = UserRemoteDataSource(api);
+  final requestRemote = RequestRemoteDataSource(api);
+  final identityRepository = ServerIdentityRepository(
+    local: repository,
+    users: userRemote,
+    requests: requestRemote,
+  );
   final controller = VeyraController(
-    users: repository,
+    users: identityRepository,
     conversations: repository,
     messages: repository,
-    requests: repository,
+    requests: identityRepository,
     settings: repository,
   );
   await controller.initialize();
+  final authController = AppAuthController(
+    auth: AuthRemoteDataSource(api, tokenStorage),
+    deviceIdentity: DeviceIdentity(tokenStorage),
+    onAuthenticated: () async {
+      await identityRepository.enableServer();
+      await controller.initialize();
+    },
+    onLoggedOut: () async {
+      await identityRepository.disableServer();
+      await controller.initialize();
+    },
+  );
   runApp(ProviderScope(
-    overrides: [veyraControllerProvider.overrideWith((ref) => controller)],
+    overrides: [
+      veyraControllerProvider.overrideWith((ref) => controller),
+      authControllerProvider.overrideWith((ref) => authController),
+    ],
     child: const VeyraApp(),
   ));
 }
@@ -394,13 +429,13 @@ class _EmeraldRibbonPainter extends CustomPainter {
 void _go(BuildContext context, Widget page) =>
     Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => page));
 
-class InviteScreen extends StatefulWidget {
+class InviteScreen extends ConsumerStatefulWidget {
   const InviteScreen({super.key});
   @override
-  State<InviteScreen> createState() => _InviteScreenState();
+  ConsumerState<InviteScreen> createState() => _InviteScreenState();
 }
 
-class _InviteScreenState extends State<InviteScreen> {
+class _InviteScreenState extends ConsumerState<InviteScreen> {
   final _code = TextEditingController();
   String? _error;
   @override
@@ -410,38 +445,43 @@ class _InviteScreenState extends State<InviteScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => AuthScaffold(
-        eyebrow: 'EARLY ACCESS',
-        title: 'Your invitation\nopens the door.',
-        subtitle: 'Enter the code shared with you to join Veyra.',
-        child: Column(children: [
-          TextField(
-              controller: _code,
-              textCapitalization: TextCapitalization.characters,
-              decoration: InputDecoration(
-                  labelText: 'Invitation code',
-                  errorText: _error,
-                  prefixIcon: const Icon(Icons.key_rounded))),
-          const SizedBox(height: 18),
-          VeyraButton(
-              label: 'Continue',
-              onPressed: () {
-                setState(() => _error = _code.text.trim().length < 6
-                    ? 'Enter a valid invitation code'
-                    : null);
-                if (_error == null) _go(context, const SignUpScreen());
-              }),
-        ]),
-      );
+  Widget build(BuildContext context) {
+    return AuthScaffold(
+      eyebrow: 'EARLY ACCESS',
+      title: 'Your invitation\nopens the door.',
+      subtitle: 'Enter the code shared with you to join Veyra.',
+      child: Column(children: [
+        TextField(
+            controller: _code,
+            textCapitalization: TextCapitalization.characters,
+            decoration: InputDecoration(
+                labelText: 'Invitation code',
+                errorText: _error,
+                prefixIcon: const Icon(Icons.key_rounded))),
+        const SizedBox(height: 18),
+        VeyraButton(
+            label: 'Continue',
+            onPressed: () {
+              setState(() => _error = _code.text.trim().length < 6
+                  ? 'Enter a valid invitation code'
+                  : null);
+              if (_error == null) {
+                ref.read(authControllerProvider).setInvitation(_code.text);
+                _go(context, const SignUpScreen());
+              }
+            }),
+      ]),
+    );
+  }
 }
 
-class SignUpScreen extends StatefulWidget {
+class SignUpScreen extends ConsumerStatefulWidget {
   const SignUpScreen({super.key});
   @override
-  State<SignUpScreen> createState() => _SignUpScreenState();
+  ConsumerState<SignUpScreen> createState() => _SignUpScreenState();
 }
 
-class _SignUpScreenState extends State<SignUpScreen> {
+class _SignUpScreenState extends ConsumerState<SignUpScreen> {
   final _email = TextEditingController();
   final _password = TextEditingController();
   String? _error;
@@ -478,23 +518,29 @@ class _SignUpScreenState extends State<SignUpScreen> {
               label: 'Continue',
               onPressed: () {
                 final valid =
-                    _email.text.contains('@') && _password.text.length >= 8;
+                    _email.text.contains('@') && _password.text.length >= 10;
                 setState(() => _error = valid
                     ? null
-                    : 'Use a valid email and at least 8 characters');
-                if (valid) _go(context, const VerifyEmailScreen());
+                    : 'Use a valid email and at least 10 characters');
+                if (valid) {
+                  ref.read(authControllerProvider).setRegistrationCredentials(
+                        _email.text,
+                        _password.text,
+                      );
+                  _go(context, const ProfileSetupScreen());
+                }
               }),
         ]),
       );
 }
 
-class LoginScreen extends StatefulWidget {
+class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
   @override
-  State<LoginScreen> createState() => _LoginScreenState();
+  ConsumerState<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen> {
+class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _email = TextEditingController();
   final _password = TextEditingController();
   @override
@@ -505,53 +551,118 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => AuthScaffold(
-      eyebrow: 'WELCOME BACK',
-      title: 'Good to see you.',
-      subtitle: 'Sign in with your private email address.',
-      child: Column(children: [
-        TextField(
-            controller: _email,
-            keyboardType: TextInputType.emailAddress,
-            decoration: const InputDecoration(
-                labelText: 'Email address',
-                prefixIcon: Icon(Icons.mail_outline_rounded))),
-        const SizedBox(height: 12),
-        TextField(
-            controller: _password,
-            obscureText: true,
-            decoration: const InputDecoration(
-                labelText: 'Password',
-                prefixIcon: Icon(Icons.lock_outline_rounded))),
-        Align(
-            alignment: Alignment.centerRight,
-            child: TextButton(
-                onPressed: () => _go(context, const ForgotPasswordScreen()),
-                child: const Text('Forgot password?'))),
-        const SizedBox(height: 10),
-        VeyraButton(
-            label: 'Sign in',
-            onPressed: () => _go(context, const MainNavigation())),
-      ]));
+  Widget build(BuildContext context) {
+    final auth = ref.watch(authControllerProvider);
+    return AuthScaffold(
+        eyebrow: 'WELCOME BACK',
+        title: 'Good to see you.',
+        subtitle: 'Sign in with your private email address.',
+        child: Column(children: [
+          TextField(
+              controller: _email,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(
+                  labelText: 'Email address',
+                  prefixIcon: Icon(Icons.mail_outline_rounded))),
+          const SizedBox(height: 12),
+          TextField(
+              controller: _password,
+              obscureText: true,
+              decoration: const InputDecoration(
+                  labelText: 'Password',
+                  prefixIcon: Icon(Icons.lock_outline_rounded))),
+          Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                  onPressed: () => _go(context, const ForgotPasswordScreen()),
+                  child: const Text('Forgot password?'))),
+          const SizedBox(height: 10),
+          VeyraButton(
+              label: auth.isBusy ? 'Signing in...' : 'Sign in',
+              onPressed: auth.isBusy
+                  ? null
+                  : () async {
+                      if (await auth.login(_email.text, _password.text) &&
+                          context.mounted) {
+                        Navigator.of(context).pushAndRemoveUntil(
+                          MaterialPageRoute<void>(
+                              builder: (_) => const MainNavigation()),
+                          (_) => false,
+                        );
+                      }
+                    }),
+          if (auth.errorMessage != null) ...[
+            const SizedBox(height: 12),
+            Text(auth.errorMessage!,
+                style: const TextStyle(color: Colors.redAccent)),
+          ],
+        ]));
+  }
 }
 
-class VerifyEmailScreen extends StatelessWidget {
+class VerifyEmailScreen extends ConsumerStatefulWidget {
   const VerifyEmailScreen({super.key});
   @override
-  Widget build(BuildContext context) => AuthScaffold(
-      eyebrow: 'VERIFY EMAIL',
-      title: 'Check your inbox.',
-      subtitle: 'We sent a verification link to your private email address.',
-      child: Column(children: [
-        const Icon(Icons.mark_email_read_outlined,
-            color: VeyraColors.emerald, size: 44),
-        const SizedBox(height: 18),
-        VeyraButton(
-            label: 'I’ve verified my email',
-            onPressed: () => _go(context, const ProfileSetupScreen())),
-        TextButton(
-            onPressed: () {}, child: const Text('Resend verification email'))
-      ]));
+  ConsumerState<VerifyEmailScreen> createState() => _VerifyEmailScreenState();
+}
+
+class _VerifyEmailScreenState extends ConsumerState<VerifyEmailScreen> {
+  final _code = TextEditingController();
+
+  @override
+  void dispose() {
+    _code.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final auth = ref.watch(authControllerProvider);
+    return AuthScaffold(
+        eyebrow: 'VERIFY EMAIL',
+        title: 'Check your inbox.',
+        subtitle: 'We sent a verification link to your private email address.',
+        child: Column(children: [
+          const Icon(Icons.mark_email_read_outlined,
+              color: VeyraColors.emerald, size: 44),
+          const SizedBox(height: 18),
+          TextField(
+            controller: _code,
+            keyboardType: TextInputType.number,
+            maxLength: 6,
+            decoration: const InputDecoration(labelText: 'Verification code'),
+          ),
+          if (auth.developmentVerificationCode != null)
+            Text(
+              'Development code: ${auth.developmentVerificationCode}',
+              style: const TextStyle(color: VeyraColors.muted),
+            ),
+          const SizedBox(height: 12),
+          VeyraButton(
+              label: 'I’ve verified my email',
+              onPressed: auth.isBusy
+                  ? null
+                  : () async {
+                      if (!await auth.verify(_code.text)) return;
+                      final loggedIn = await auth.login(
+                        auth.registrationEmail,
+                        auth.registrationPassword,
+                      );
+                      if (loggedIn && context.mounted) {
+                        Navigator.of(context).pushAndRemoveUntil(
+                          MaterialPageRoute<void>(
+                              builder: (_) => const MainNavigation()),
+                          (_) => false,
+                        );
+                      }
+                    }),
+          const TextButton(
+              onPressed: null, child: Text('Resend verification email')),
+          if (auth.errorMessage != null)
+            Text(auth.errorMessage!,
+                style: const TextStyle(color: Colors.redAccent)),
+        ]));
+  }
 }
 
 class ForgotPasswordScreen extends StatelessWidget {
@@ -574,13 +685,13 @@ class ForgotPasswordScreen extends StatelessWidget {
       ]));
 }
 
-class ProfileSetupScreen extends StatefulWidget {
+class ProfileSetupScreen extends ConsumerStatefulWidget {
   const ProfileSetupScreen({super.key});
   @override
-  State<ProfileSetupScreen> createState() => _ProfileSetupScreenState();
+  ConsumerState<ProfileSetupScreen> createState() => _ProfileSetupScreenState();
 }
 
-class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
+class _ProfileSetupScreenState extends ConsumerState<ProfileSetupScreen> {
   final _username = TextEditingController();
   final _name = TextEditingController();
   final _bio = TextEditingController();
@@ -594,54 +705,68 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => AuthScaffold(
-      eyebrow: 'PUBLIC PROFILE',
-      title: 'Make it yours.',
-      subtitle:
-          'Your name and username are visible to people you connect with. Your email stays private.',
-      child: Column(children: [
-        const CircleAvatar(
-            radius: 34,
-            backgroundColor: VeyraColors.elevated,
-            child:
-                Icon(Icons.add_a_photo_outlined, color: VeyraColors.emerald)),
-        const SizedBox(height: 18),
-        TextField(
-            controller: _username,
-            onChanged: (_) => setState(() {}),
-            decoration: InputDecoration(
-                labelText: 'Unique username',
-                prefixText: '@',
-                errorText: _usernameError,
-                suffixIcon: _username.text.length > 2
-                    ? const Icon(Icons.check_circle, color: VeyraColors.emerald)
-                    : null)),
-        const SizedBox(height: 12),
-        TextField(
-            controller: _name,
-            decoration: const InputDecoration(labelText: 'Display name')),
-        const SizedBox(height: 12),
-        TextField(
-            controller: _bio,
-            maxLength: 90,
-            decoration: const InputDecoration(labelText: 'Bio (optional)')),
-        const SizedBox(height: 12),
-        VeyraButton(
-            label: 'Finish setup',
-            onPressed: () {
-              final invalid =
-                  _username.text.trim().length < 3 || _name.text.trim().isEmpty;
-              setState(() => _usernameError = invalid
-                  ? 'Choose a username with at least 3 characters'
-                  : null);
-              if (!invalid) {
-                Navigator.of(context).pushAndRemoveUntil(
-                    MaterialPageRoute<void>(
-                        builder: (_) => const MainNavigation()),
-                    (_) => false);
-              }
-            }),
-      ]));
+  Widget build(BuildContext context) {
+    final auth = ref.watch(authControllerProvider);
+    return AuthScaffold(
+        eyebrow: 'PUBLIC PROFILE',
+        title: 'Make it yours.',
+        subtitle:
+            'Your name and username are visible to people you connect with. Your email stays private.',
+        child: Column(children: [
+          const CircleAvatar(
+              radius: 34,
+              backgroundColor: VeyraColors.elevated,
+              child:
+                  Icon(Icons.add_a_photo_outlined, color: VeyraColors.emerald)),
+          const SizedBox(height: 18),
+          TextField(
+              controller: _username,
+              onChanged: (_) => setState(() {}),
+              decoration: InputDecoration(
+                  labelText: 'Unique username',
+                  prefixText: '@',
+                  errorText: _usernameError,
+                  suffixIcon: _username.text.length > 2
+                      ? const Icon(Icons.check_circle,
+                          color: VeyraColors.emerald)
+                      : null)),
+          const SizedBox(height: 12),
+          TextField(
+              controller: _name,
+              decoration: const InputDecoration(labelText: 'Display name')),
+          const SizedBox(height: 12),
+          TextField(
+              controller: _bio,
+              maxLength: 90,
+              decoration: const InputDecoration(labelText: 'Bio (optional)')),
+          const SizedBox(height: 12),
+          VeyraButton(
+              label: auth.isBusy ? 'Creating account...' : 'Continue',
+              onPressed: auth.isBusy
+                  ? null
+                  : () async {
+                      final invalid = _username.text.trim().length < 3 ||
+                          _name.text.trim().isEmpty;
+                      setState(() => _usernameError = invalid
+                          ? 'Choose a username with at least 3 characters'
+                          : null);
+                      if (!invalid) {
+                        final created = await auth.register(
+                          username: _username.text,
+                          displayName: _name.text,
+                        );
+                        if (created && context.mounted) {
+                          _go(context, const VerifyEmailScreen());
+                        }
+                      }
+                    }),
+          if (auth.errorMessage != null) ...[
+            const SizedBox(height: 12),
+            Text(auth.errorMessage!,
+                style: const TextStyle(color: Colors.redAccent)),
+          ],
+        ]));
+  }
 }
 
 class AuthScaffold extends StatelessWidget {
@@ -688,7 +813,7 @@ class AuthScaffold extends StatelessWidget {
 class VeyraButton extends StatelessWidget {
   const VeyraButton({required this.label, required this.onPressed, super.key});
   final String label;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
   @override
   Widget build(BuildContext context) => FilledButton(
       onPressed: onPressed,
@@ -710,11 +835,16 @@ class MainNavigation extends StatefulWidget {
 class _MainNavigationState extends State<MainNavigation> {
   int _index = 0;
   late final PageController _pageController = PageController();
-  final _pages = const [
-    ChatHomeScreen(),
-    VeyraCallsScreen(),
-    VeyraSettingsScreen()
-  ];
+  List<Widget> get _pages => [
+        const ChatHomeScreen(),
+        const VeyraCallsScreen(),
+        VeyraSettingsScreen(
+          onLoggedOut: () => Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute<void>(builder: (_) => const WelcomeScreen()),
+            (_) => false,
+          ),
+        ),
+      ];
 
   @override
   void dispose() {

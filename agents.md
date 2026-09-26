@@ -6,10 +6,16 @@ Veyra is a private, invitation-only messaging application
 designed initially for 100 registered users.
 
 ## Current phase
-Phase 1: Flutter UI/UX only.
+Phase 3: FastAPI authentication, user directory, message requests, and
+device registration.
 
-Do not implement a backend, database, real authentication,
-encryption, WebRTC or cloud services during this phase.
+The Flutter application remains in this repository. The backend lives in the
+sibling `veyra-backend` directory and uses FastAPI, PostgreSQL, SQLAlchemy 2.x,
+Alembic, and Pydantic.
+
+Do not implement real-time messaging, end-to-end encryption, WebRTC, push
+notifications, media uploads, presence, or cloud-specific services during this
+phase.
 
 ## Technology
 - Flutter and Dart
