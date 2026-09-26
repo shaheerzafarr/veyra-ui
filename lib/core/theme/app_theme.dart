@@ -2,14 +2,23 @@ import 'package:flutter/material.dart';
 
 abstract final class VeyraColors {
   static const background = Color(0xFF0B0F10);
+  static const backgroundDeep = Color(0xFF030908);
   static const surface = Color(0xFF151B1C);
   static const elevated = Color(0xFF202829);
   static const emerald = Color(0xFF34D399);
+  static const emeraldBright = Color(0xFF42F5C2);
+  static const emeraldDeep = Color(0xFF08755D);
   static const text = Color(0xFFF3F6F5);
   static const muted = Color(0xFF94A3A0);
+  static const outline = Color(0xFF7D8987);
   static const danger = Color(0xFFF87171);
   static const border = Color(0xFF2B3535);
-  static const sent = Color(0xFF145A47);
+  static const sent = Color(0xFF08745B);
+}
+
+abstract final class VeyraRadii {
+  static const control = 18.0;
+  static const pill = 999.0;
 }
 
 ThemeData veyraTheme() {
@@ -37,10 +46,27 @@ ThemeData veyraTheme() {
         TargetPlatform.fuchsia: VeyraPageTransitionsBuilder(),
       },
     ),
-    textTheme: ThemeData.dark().textTheme.apply(
+    textTheme: ThemeData.dark()
+        .textTheme
+        .apply(
           bodyColor: VeyraColors.text,
           displayColor: VeyraColors.text,
           fontFamily: 'Roboto',
+        )
+        .copyWith(
+          displayLarge: const TextStyle(
+            color: VeyraColors.text,
+            fontSize: 54,
+            height: .98,
+            fontWeight: FontWeight.w800,
+            letterSpacing: -2.4,
+          ),
+          bodyLarge: const TextStyle(
+            color: VeyraColors.muted,
+            fontSize: 18,
+            height: 1.42,
+            fontWeight: FontWeight.w400,
+          ),
         ),
     appBarTheme: const AppBarTheme(
       backgroundColor: VeyraColors.background,
@@ -54,9 +80,12 @@ ThemeData veyraTheme() {
       ),
     ),
     navigationBarTheme: NavigationBarThemeData(
-      backgroundColor: VeyraColors.background,
-      height: 70,
-      indicatorColor: VeyraColors.emerald.withValues(alpha: .12),
+      backgroundColor: VeyraColors.surface,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      height: 76,
+      indicatorColor: VeyraColors.emerald.withValues(alpha: .16),
+      indicatorShape: const StadiumBorder(),
       labelTextStyle: WidgetStateProperty.resolveWith((states) => TextStyle(
             color: states.contains(WidgetState.selected)
                 ? VeyraColors.emerald
@@ -74,7 +103,7 @@ ThemeData veyraTheme() {
     chipTheme: ChipThemeData(
       backgroundColor: VeyraColors.elevated,
       selectedColor: VeyraColors.emerald,
-      side: const BorderSide(color: VeyraColors.border),
+      side: const BorderSide(color: VeyraColors.border, width: 1.1),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
       labelStyle: const TextStyle(color: VeyraColors.text, fontSize: 12),
     ),
@@ -82,8 +111,22 @@ ThemeData veyraTheme() {
       style: FilledButton.styleFrom(
         backgroundColor: VeyraColors.emerald,
         foregroundColor: VeyraColors.background,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        textStyle: const TextStyle(fontWeight: FontWeight.w700),
+        minimumSize: const Size.fromHeight(58),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(VeyraRadii.control),
+        ),
+        textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: VeyraColors.text,
+        minimumSize: const Size.fromHeight(58),
+        side: const BorderSide(color: VeyraColors.outline, width: 1.2),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(VeyraRadii.control),
+        ),
+        textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
       ),
     ),
     inputDecorationTheme: InputDecorationTheme(

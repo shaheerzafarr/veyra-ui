@@ -108,47 +108,268 @@ class WelcomeScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-        body: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Spacer(flex: 2),
-                const BrandMark(),
-                const SizedBox(height: 34),
-                const Text('Conversations,\nkept close.',
-                    style: TextStyle(
-                        fontSize: 39,
-                        height: 1.08,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: -1.5)),
-                const SizedBox(height: 16),
-                const Text('A calm, private space for the people you choose.',
-                    style: TextStyle(
-                        fontSize: 16, color: VeyraColors.muted, height: 1.45)),
-                const Spacer(flex: 3),
-                VeyraButton(
-                  label: 'Create an account',
-                  onPressed: () => _go(context, const InviteScreen()),
-                ),
-                const SizedBox(height: 12),
-                OutlinedButton(
-                  onPressed: () => _go(context, const LoginScreen()),
-                  style: OutlinedButton.styleFrom(
-                      minimumSize: const Size.fromHeight(56)),
-                  child: const Text('I already have an account'),
-                ),
-                const SizedBox(height: 8),
-                const Center(
-                    child: Text('Invitation-only during early access',
-                        style:
-                            TextStyle(color: VeyraColors.muted, fontSize: 12))),
-              ],
+        backgroundColor: VeyraColors.backgroundDeep,
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            const RepaintBoundary(child: _EmeraldWelcomeBackdrop()),
+            SafeArea(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final compact = constraints.maxHeight < 720;
+                  return SingleChildScrollView(
+                    padding: EdgeInsets.fromLTRB(
+                      28,
+                      compact ? 30 : 54,
+                      28,
+                      20,
+                    ),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: constraints.maxHeight > (compact ? 50 : 74)
+                            ? constraints.maxHeight - (compact ? 50 : 74)
+                            : 0,
+                      ),
+                      child: IntrinsicHeight(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const BrandMark(size: 72),
+                            SizedBox(height: compact ? 34 : 52),
+                            Text.rich(
+                              TextSpan(
+                                children: [
+                                  const TextSpan(text: 'Conversations,\n'),
+                                  TextSpan(
+                                    text: 'kept close.',
+                                    style: TextStyle(
+                                      color:
+                                          Theme.of(context).colorScheme.primary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .displayLarge
+                                  ?.copyWith(fontSize: compact ? 45 : 54),
+                            ),
+                            const SizedBox(height: 22),
+                            ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 350),
+                              child: Text(
+                                'A calm, private space for the\npeople you choose.',
+                                style: Theme.of(context).textTheme.bodyLarge,
+                              ),
+                            ),
+                            const Spacer(),
+                            SizedBox(height: compact ? 46 : 88),
+                            _WelcomeAction(
+                              label: 'Create an account',
+                              leading: Icons.person_add_alt_1_outlined,
+                              filled: true,
+                              onPressed: () =>
+                                  _go(context, const InviteScreen()),
+                            ),
+                            const SizedBox(height: 14),
+                            _WelcomeAction(
+                              label: 'I already have an account',
+                              leading: Icons.login_rounded,
+                              onPressed: () =>
+                                  _go(context, const LoginScreen()),
+                            ),
+                            const SizedBox(height: 24),
+                            const Center(
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.lock_outline_rounded,
+                                    color: VeyraColors.muted,
+                                    size: 17,
+                                  ),
+                                  SizedBox(width: 9),
+                                  Text(
+                                    'Invitation-only during early access',
+                                    style: TextStyle(
+                                      color: VeyraColors.muted,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
             ),
-          ),
+          ],
         ),
       );
+}
+
+class _WelcomeAction extends StatelessWidget {
+  const _WelcomeAction({
+    required this.label,
+    required this.leading,
+    required this.onPressed,
+    this.filled = false,
+  });
+
+  final String label;
+  final IconData leading;
+  final VoidCallback onPressed;
+  final bool filled;
+
+  @override
+  Widget build(BuildContext context) {
+    final content = Row(
+      children: [
+        Icon(leading, size: 22),
+        Expanded(child: Text(label, textAlign: TextAlign.center)),
+        const Icon(Icons.arrow_forward_rounded, size: 22),
+      ],
+    );
+    final shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(VeyraRadii.pill),
+    );
+
+    if (filled) {
+      return FilledButton(
+        onPressed: onPressed,
+        style: FilledButton.styleFrom(
+          minimumSize: const Size.fromHeight(62),
+          shape: shape,
+        ),
+        child: content,
+      );
+    }
+    return OutlinedButton(
+      onPressed: onPressed,
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size.fromHeight(62),
+        shape: shape,
+      ),
+      child: content,
+    );
+  }
+}
+
+class _EmeraldWelcomeBackdrop extends StatelessWidget {
+  const _EmeraldWelcomeBackdrop();
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+        decoration: const BoxDecoration(
+          gradient: RadialGradient(
+            center: Alignment(.82, -.35),
+            radius: 1.35,
+            colors: [
+              Color(0xFF06342C),
+              VeyraColors.backgroundDeep,
+              Color(0xFF020605),
+            ],
+            stops: [0, .48, 1],
+          ),
+        ),
+        child: CustomPaint(painter: _EmeraldRibbonPainter()),
+      );
+}
+
+class _EmeraldRibbonPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final glow = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.35
+      ..shader = const LinearGradient(
+        colors: [Color(0x001CF0B8), Color(0xFF54F6CC), Color(0x001CF0B8)],
+      ).createShader(Offset.zero & size)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7);
+
+    final ribbon = Path()
+      ..moveTo(size.width * 1.08, size.height * .12)
+      ..cubicTo(
+        size.width * .58,
+        size.height * .24,
+        size.width * .92,
+        size.height * .49,
+        size.width * .54,
+        size.height * .63,
+      )
+      ..cubicTo(
+        size.width * .23,
+        size.height * .75,
+        size.width * .15,
+        size.height * .72,
+        -size.width * .08,
+        size.height * .88,
+      )
+      ..cubicTo(
+        size.width * .18,
+        size.height * .61,
+        size.width * .68,
+        size.height * .67,
+        size.width * 1.08,
+        size.height * .37,
+      )
+      ..close();
+    canvas.drawPath(
+      ribbon,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topRight,
+          end: Alignment.bottomLeft,
+          colors: [
+            Color(0x0029E6B2),
+            Color(0x7029E6B2),
+            Color(0x0809A77F),
+          ],
+        ).createShader(Offset.zero & size),
+    );
+    canvas.drawPath(ribbon, glow);
+
+    final lowerSweep = Path()
+      ..moveTo(-size.width * .16, size.height * .58)
+      ..cubicTo(
+        size.width * .3,
+        size.height * .68,
+        size.width * .5,
+        size.height * .82,
+        size.width * 1.12,
+        size.height * .59,
+      )
+      ..cubicTo(
+        size.width * .74,
+        size.height * .87,
+        size.width * .24,
+        size.height * .71,
+        -size.width * .16,
+        size.height * .74,
+      )
+      ..close();
+    canvas.drawPath(
+      lowerSweep,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+          colors: [
+            Color(0x0015C996),
+            Color(0x5515C996),
+            Color(0x0015C996),
+          ],
+        ).createShader(Offset.zero & size),
+    );
+    canvas.drawPath(lowerSweep, glow..strokeWidth = .8);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 void _go(BuildContext context, Widget page) =>

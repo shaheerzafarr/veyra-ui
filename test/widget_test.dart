@@ -25,6 +25,28 @@ void main() {
     expect(find.text('New group'), findsOneWidget);
   });
 
+  testWidgets('Calls screen filters history and creates a local call link',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    await tester.pumpWidget(
+        MaterialApp(theme: veyraTheme(), home: const MainNavigation()));
+
+    await tester.tap(find.text('Calls'));
+    await tester.pumpAndSettle();
+    expect(find.text('Aisha Khan'), findsOneWidget);
+    expect(find.text('Omar Siddiqui'), findsOneWidget);
+
+    await tester.tap(find.text('Missed'));
+    await tester.pumpAndSettle();
+    expect(find.text('Aisha Khan'), findsNothing);
+    expect(find.text('Omar Siddiqui'), findsOneWidget);
+
+    await tester.tap(find.text('Create call link'));
+    await tester.pumpAndSettle();
+    expect(find.text('Veyra call link'), findsOneWidget);
+    expect(find.text('veyra.local/call/close-circle'), findsOneWidget);
+  });
+
   testWidgets('Settings opens a functional Privacy page', (tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 844));
     await tester.pumpWidget(
