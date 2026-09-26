@@ -21,6 +21,11 @@ class ApiClient {
   static const _timeout = Duration(seconds: 15);
   Future<void>? _refreshing;
 
+  Future<String?> websocketAccessToken({bool refresh = false}) async {
+    if (refresh) await _refreshTokens();
+    return _tokens.readAccessToken();
+  }
+
   Future<Map<String, dynamic>> getJson(String path,
           {Map<String, String>? query}) =>
       _send('GET', path, query: query);

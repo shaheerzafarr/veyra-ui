@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/data/local_database.dart';
+import 'core/data/network_message_repository.dart';
 import 'core/data/repositories.dart';
 import 'core/data/server_identity_repository.dart';
 import 'core/network/api_client.dart';
+import 'core/network/messaging_socket.dart';
 import 'core/network/remote_data_sources.dart';
 import 'core/network/token_storage.dart';
 import 'core/state/auth_controller.dart';
@@ -18,36 +20,52 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final repository = LocalVeyraRepository(VeyraDatabase());
   final tokenStorage = SecureTokenStorage();
+  const apiBaseUrl = String.fromEnvironment(
+    'VEYRA_API_URL',
+    defaultValue: 'http://10.0.2.2:8000',
+  );
   final api = ApiClient(
-    baseUrl: const String.fromEnvironment(
-      'VEYRA_API_URL',
-      defaultValue: 'http://10.0.2.2:8000',
-    ),
+    baseUrl: apiBaseUrl,
     tokens: tokenStorage,
   );
   final userRemote = UserRemoteDataSource(api);
   final requestRemote = RequestRemoteDataSource(api);
+  final conversationRemote = ConversationRemoteDataSource(api);
   final identityRepository = ServerIdentityRepository(
     local: repository,
     users: userRemote,
     requests: requestRemote,
+    conversations: conversationRemote,
+  );
+  final deviceIdentity = DeviceIdentity(tokenStorage);
+  final messageRepository = NetworkMessageRepository(
+    local: repository,
+    socket: MessagingSocket(
+      apiBaseUrl: apiBaseUrl,
+      tokenProvider: ({bool refresh = false}) =>
+          api.websocketAccessToken(refresh: refresh),
+      deviceProvider: deviceIdentity.getOrCreate,
+    ),
+    deviceId: deviceIdentity.getOrCreate,
   );
   final controller = VeyraController(
     users: identityRepository,
     conversations: repository,
-    messages: repository,
+    messages: messageRepository,
     requests: identityRepository,
     settings: repository,
   );
   await controller.initialize();
   final authController = AppAuthController(
     auth: AuthRemoteDataSource(api, tokenStorage),
-    deviceIdentity: DeviceIdentity(tokenStorage),
+    deviceIdentity: deviceIdentity,
     onAuthenticated: () async {
       await identityRepository.enableServer();
       await controller.initialize();
+      await controller.enableRealtime();
     },
     onLoggedOut: () async {
+      await controller.disableRealtime();
       await identityRepository.disableServer();
       await controller.initialize();
     },
@@ -61,8 +79,37 @@ Future<void> main() async {
   ));
 }
 
-class VeyraApp extends StatelessWidget {
+class VeyraApp extends ConsumerStatefulWidget {
   const VeyraApp({super.key});
+
+  @override
+  ConsumerState<VeyraApp> createState() => _VeyraAppState();
+}
+
+class _VeyraAppState extends ConsumerState<VeyraApp>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final controller = ref.read(veyraControllerProvider);
+    if (state == AppLifecycleState.resumed) {
+      controller.appResumed();
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      controller.appPaused();
+    }
+  }
 
   @override
   Widget build(BuildContext context) => MaterialApp(

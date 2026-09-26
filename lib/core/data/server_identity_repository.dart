@@ -3,18 +3,21 @@ import '../network/remote_data_sources.dart';
 import 'repositories.dart';
 
 class ServerIdentityRepository
-    implements UserRepository, ContactRequestRepository {
+    implements UserRepository, ContactRequestRepository, ConversationSync {
   ServerIdentityRepository({
     required LocalVeyraRepository local,
     required UserRemoteDataSource users,
     required RequestRemoteDataSource requests,
+    required ConversationRemoteDataSource conversations,
   })  : _local = local,
         _users = users,
-        _requests = requests;
+        _requests = requests,
+        _conversations = conversations;
 
   final LocalVeyraRepository _local;
   final UserRemoteDataSource _users;
   final RequestRemoteDataSource _requests;
+  final ConversationRemoteDataSource _conversations;
   final Map<String, ContactRequestView> _requestCache = {};
   bool _serverEnabled = false;
   String? _previousLocalUserId;
@@ -25,6 +28,28 @@ class ServerIdentityRepository
     await _local.cacheUser(current);
     await _local.setActiveUserId(current.id);
     _serverEnabled = true;
+    try {
+      await syncConversations();
+    } catch (_) {
+      _serverEnabled = false;
+      rethrow;
+    }
+  }
+
+  @override
+  Future<void> syncConversations() async {
+    if (!_serverEnabled) return;
+    final currentUserId = await _local.getActiveUserId();
+    for (final row in await _conversations.list()) {
+      final peer = _userFromJson(row['other_user'] as Map<String, dynamic>);
+      await _local.cacheUser(peer);
+      await _local.ensureDirectConversation(
+        row['id'] as String,
+        currentUserId,
+        peer.id,
+        DateTime.parse(row['created_at'] as String),
+      );
+    }
   }
 
   Future<void> disableServer() async {

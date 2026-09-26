@@ -99,4 +99,65 @@ void main() {
         ['Persistent hello', 'Persistent reply']);
     await reopenedDatabase.close();
   });
+
+  test('persistent outbox survives restart and keeps the same UUID', () async {
+    await database.close();
+    final directory = await Directory.systemTemp.createTemp('veyra_outbox_');
+    addTearDown(() => directory.delete(recursive: true));
+    final path = '${directory.path}${Platform.pathSeparator}veyra.db';
+    final firstDatabase =
+        VeyraDatabase(factory: databaseFactoryFfi, path: path);
+    final first = LocalVeyraRepository(firstDatabase);
+    final users = await first.getUsers();
+    final alice = users.firstWhere((user) => user.username == 'alex');
+    final bob = users.firstWhere((user) => user.username == 'sarah');
+    final request = await first.createRequest(alice.id, bob.id, 'Hello');
+    final conversationId = await first.acceptRequest(request.id, bob.id);
+    final outgoing = await first.createOutgoingMessage(
+        conversationId, alice.id, 'device-alice', 'Queued message');
+    expect(outgoing.deliveryStatus, DeliveryStatus.sending);
+    await firstDatabase.close();
+
+    final reopenedDatabase =
+        VeyraDatabase(factory: databaseFactoryFfi, path: path);
+    final reopened = LocalVeyraRepository(reopenedDatabase);
+    final pending = await reopened.pendingOutgoingMessages();
+    expect(pending.single.id, outgoing.id);
+    expect(pending.single.content, 'Queued message');
+    await reopenedDatabase.close();
+  });
+
+  test('incoming message persistence is idempotent and statuses are real',
+      () async {
+    final users = await repository.getUsers();
+    final alice = users.firstWhere((user) => user.username == 'alex');
+    final bob = users.firstWhere((user) => user.username == 'sarah');
+    final request = await repository.createRequest(alice.id, bob.id, 'Hello');
+    final conversationId = await repository.acceptRequest(request.id, bob.id);
+    final now = DateTime.now().toUtc();
+    final incoming = ChatMessage(
+      id: '11111111-1111-4111-8111-111111111111',
+      conversationId: conversationId,
+      senderUserId: alice.id,
+      senderDeviceId: 'device-alice',
+      type: MessageType.text,
+      content: 'Delivered once',
+      createdAt: now.subtract(const Duration(seconds: 1)),
+      updatedAt: now,
+      serverReceivedAt: now,
+      deliveryStatus: DeliveryStatus.delivered,
+    );
+    expect(await repository.persistIncomingMessage(incoming), isTrue);
+    expect(await repository.persistIncomingMessage(incoming), isFalse);
+    final stored = await repository.getMessages(conversationId);
+    expect(stored.where((message) => message.id == incoming.id), hasLength(1));
+
+    await repository.updateDeliveryStatus(incoming.id, DeliveryStatus.read);
+    expect(
+      (await repository.getMessages(conversationId))
+          .firstWhere((message) => message.id == incoming.id)
+          .deliveryStatus,
+      DeliveryStatus.read,
+    );
+  });
 }

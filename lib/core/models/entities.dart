@@ -110,6 +110,8 @@ class ChatMessage {
     required this.createdAt,
     required this.updatedAt,
     required this.deliveryStatus,
+    this.senderDeviceId,
+    this.serverReceivedAt,
     this.replyToMessageId,
     this.isEdited = false,
     this.isDeleted = false,
@@ -118,11 +120,13 @@ class ChatMessage {
   final String id;
   final String conversationId;
   final String senderUserId;
+  final String? senderDeviceId;
   final MessageType type;
   final String content;
   final String? replyToMessageId;
   final DateTime createdAt;
   final DateTime updatedAt;
+  final DateTime? serverReceivedAt;
   final DeliveryStatus deliveryStatus;
   final bool isEdited;
   final bool isDeleted;

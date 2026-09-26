@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/models/entities.dart';
 import '../../core/models/public_profile.dart';
+import '../../core/network/messaging_socket.dart';
 import '../../core/state/veyra_controller.dart';
 import '../../core/theme/app_theme.dart';
 import '../app_ui/veyra_feature_screens.dart';
@@ -68,6 +69,8 @@ class _ChatHomeScreenState extends ConsumerState<ChatHomeScreen> {
           padding: const EdgeInsets.fromLTRB(16, 24, 16, 24),
           children: [
             _InboxHeader(
+              connectionState:
+                  state.realtimeEnabled ? state.connectionState : null,
               onDiscover: () => Navigator.push(
                 context,
                 MaterialPageRoute<void>(
@@ -163,10 +166,14 @@ const _filterIcons = <String, IconData>{
 };
 
 class _InboxHeader extends StatelessWidget {
-  const _InboxHeader({required this.onDiscover, required this.onNewChat});
+  const _InboxHeader(
+      {required this.onDiscover,
+      required this.onNewChat,
+      required this.connectionState});
 
   final VoidCallback onDiscover;
   final VoidCallback onNewChat;
+  final MessagingConnectionState? connectionState;
 
   @override
   Widget build(BuildContext context) => Row(
@@ -198,6 +205,19 @@ class _InboxHeader extends StatelessWidget {
               ],
             ),
           ),
+          if (connectionState != null) ...[
+            Tooltip(
+              message: connectionState!.name,
+              child: CircleAvatar(
+                radius: 5,
+                backgroundColor:
+                    connectionState == MessagingConnectionState.connected
+                        ? VeyraColors.emerald
+                        : VeyraColors.muted,
+              ),
+            ),
+            const SizedBox(width: 12),
+          ],
           _HeaderAction(
               tooltip: 'Discover people',
               icon: Icons.person_search_outlined,

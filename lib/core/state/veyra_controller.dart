@@ -1,9 +1,11 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/network_message_repository.dart';
 import '../data/repositories.dart';
 import '../models/entities.dart';
 import '../models/public_profile.dart';
+import '../network/messaging_socket.dart';
 
 final veyraControllerProvider = ChangeNotifierProvider<VeyraController>(
   (ref) => throw StateError('VeyraController must be provided at the app root'),
@@ -20,7 +22,11 @@ class VeyraController extends ChangeNotifier {
         _conversations = conversations,
         _messages = messages,
         _requests = requests,
-        _settingsRepository = settings;
+        _settingsRepository = settings {
+    if (_messages is RealtimeMessageActions) {
+      (_messages as RealtimeMessageActions).updates.listen(_onMessagingUpdate);
+    }
+  }
 
   final UserRepository _users;
   final ConversationRepository _conversations;
@@ -37,6 +43,51 @@ class VeyraController extends ChangeNotifier {
   List<ContactRequestView> incomingRequests = const [];
   List<ContactRequestView> outgoingRequests = const [];
   final Map<String, List<ChatMessage>> _messageCache = {};
+  final Map<String, String> typingUsers = {};
+  bool realtimeEnabled = false;
+
+  MessagingConnectionState get connectionState =>
+      _messages is RealtimeMessageActions
+          ? (_messages as RealtimeMessageActions).connectionState
+          : MessagingConnectionState.offline;
+
+  Future<void> enableRealtime() async {
+    if (_messages is! RealtimeMessageActions) return;
+    realtimeEnabled = true;
+    await (_messages as RealtimeMessageActions).start(activeUser.id);
+    notifyListeners();
+  }
+
+  Future<void> disableRealtime() async {
+    realtimeEnabled = false;
+    if (_messages is RealtimeMessageActions) {
+      await (_messages as RealtimeMessageActions).stop();
+    }
+    notifyListeners();
+  }
+
+  Future<void> _onMessagingUpdate(MessagingUpdate update) async {
+    if (!realtimeEnabled) return;
+    if (update.conversationId case final conversationId?) {
+      if (_messageCache.containsKey(conversationId)) {
+        _messageCache[conversationId] =
+            await _messages.getMessages(conversationId, limit: 100);
+      }
+      if (update.typingUserId case final userId?) {
+        typingUsers[conversationId] = userId;
+      } else {
+        typingUsers.remove(conversationId);
+      }
+    } else {
+      for (final conversationId in _messageCache.keys.toList()) {
+        _messageCache[conversationId] =
+            await _messages.getMessages(conversationId, limit: 100);
+      }
+    }
+    conversationSummaries =
+        await _conversations.getConversations(activeUser.id);
+    notifyListeners();
+  }
 
   Future<void> initialize() async {
     isLoading = true;
@@ -57,6 +108,9 @@ class VeyraController extends ChangeNotifier {
   }
 
   Future<void> _reloadAccountData() async {
+    if (_users is ConversationSync) {
+      await (_users as ConversationSync).syncConversations();
+    }
     final results = await Future.wait<Object>([
       _conversations.getConversations(activeUser.id),
       _requests.getIncomingRequests(activeUser.id),
@@ -153,6 +207,10 @@ class VeyraController extends ChangeNotifier {
     }
     final loaded = await _messages.getMessages(conversationId, limit: 100);
     await _conversations.markConversationRead(conversationId, activeUser.id);
+    if (_messages is RealtimeMessageActions) {
+      await (_messages as RealtimeMessageActions)
+          .markConversationRead(conversationId, settings.readReceiptsEnabled);
+    }
     _messageCache[conversationId] = loaded;
     conversationSummaries =
         await _conversations.getConversations(activeUser.id);
@@ -175,6 +233,24 @@ class VeyraController extends ChangeNotifier {
     conversationSummaries =
         await _conversations.getConversations(activeUser.id);
     notifyListeners();
+  }
+
+  void setTyping(String conversationId, bool value) {
+    if (_messages is RealtimeMessageActions) {
+      (_messages as RealtimeMessageActions).typing(conversationId, value);
+    }
+  }
+
+  void appResumed() {
+    if (realtimeEnabled && _messages is NetworkMessageRepository) {
+      _messages.appResumed();
+    }
+  }
+
+  Future<void> appPaused() async {
+    if (realtimeEnabled && _messages is NetworkMessageRepository) {
+      await _messages.appPaused();
+    }
   }
 
   Future<void> deleteMessage(String conversationId, String messageId) async {

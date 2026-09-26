@@ -30,6 +30,10 @@ abstract interface class ConversationRepository {
   Future<void> leaveGroup(String conversationId, String userId);
 }
 
+abstract interface class ConversationSync {
+  Future<void> syncConversations();
+}
+
 abstract interface class MessageRepository {
   Future<List<ChatMessage>> getMessages(String conversationId,
       {int limit = 100, int offset = 0});
@@ -353,7 +357,7 @@ class LocalVeyraRepository
       'messages',
       where: 'conversation_id = ?',
       whereArgs: [conversationId],
-      orderBy: 'created_at DESC',
+      orderBy: 'COALESCE(server_received_at, created_at) DESC, id DESC',
       limit: limit,
       offset: offset,
     );
@@ -401,6 +405,143 @@ class LocalVeyraRepository
           whereArgs: [conversationId, senderId]);
     });
     return message;
+  }
+
+  Future<ChatMessage> createOutgoingMessage(
+    String conversationId,
+    String senderId,
+    String senderDeviceId,
+    String content, {
+    String? replyToMessageId,
+  }) async {
+    final db = await _db;
+    final now = DateTime.now().toUtc();
+    final message = ChatMessage(
+      id: _uuid.v4(),
+      conversationId: conversationId,
+      senderUserId: senderId,
+      senderDeviceId: senderDeviceId,
+      type: MessageType.text,
+      content: content.trim(),
+      replyToMessageId: replyToMessageId,
+      createdAt: now,
+      updatedAt: now,
+      deliveryStatus: DeliveryStatus.sending,
+    );
+    await db.transaction((txn) async {
+      final member = Sqflite.firstIntValue(await txn.rawQuery('''
+        SELECT COUNT(*) FROM conversation_participants
+        WHERE conversation_id = ? AND user_id = ?
+      ''', [conversationId, senderId]));
+      if (member != 1) throw StateError('Sender is not a conversation member');
+      await txn.insert('messages', _messageToRow(message));
+      await txn.update(
+          'conversations',
+          {
+            'updated_at': now.toIso8601String(),
+            'last_message_at': now.toIso8601String(),
+          },
+          where: 'id = ?',
+          whereArgs: [conversationId]);
+    });
+    return message;
+  }
+
+  Future<bool> persistIncomingMessage(ChatMessage message) async {
+    final db = await _db;
+    var inserted = false;
+    await db.transaction((txn) async {
+      final existing = await txn.query('messages',
+          columns: ['id'], where: 'id = ?', whereArgs: [message.id]);
+      if (existing.isNotEmpty) return;
+      await txn.insert('messages', _messageToRow(message));
+      await txn.update(
+          'conversations',
+          {
+            'updated_at': message.serverReceivedAt?.toIso8601String() ??
+                message.updatedAt.toIso8601String(),
+            'last_message_at': message.serverReceivedAt?.toIso8601String() ??
+                message.createdAt.toIso8601String(),
+          },
+          where: 'id = ?',
+          whereArgs: [message.conversationId]);
+      inserted = true;
+    });
+    return inserted;
+  }
+
+  Future<void> ensureDirectConversation(
+    String conversationId,
+    String currentUserId,
+    String peerUserId,
+    DateTime createdAt,
+  ) async {
+    final db = await _db;
+    final timestamp = createdAt.toUtc().toIso8601String();
+    await db.transaction((txn) async {
+      await txn.insert(
+        'conversations',
+        {
+          'id': conversationId,
+          'type': 'direct',
+          'created_at': timestamp,
+          'updated_at': timestamp,
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+      for (final userId in [currentUserId, peerUserId]) {
+        await txn.insert(
+          'conversation_participants',
+          {
+            'conversation_id': conversationId,
+            'user_id': userId,
+            'role': 'member',
+            'joined_at': timestamp,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+        await txn.insert(
+          'conversation_user_state',
+          {'conversation_id': conversationId, 'user_id': userId},
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+    });
+  }
+
+  Future<void> updateDeliveryStatus(String messageId, DeliveryStatus status,
+      {DateTime? serverReceivedAt}) async {
+    await (await _db).update(
+        'messages',
+        {
+          'delivery_status': status.name,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+          if (serverReceivedAt != null)
+            'server_received_at': serverReceivedAt.toUtc().toIso8601String(),
+          if (status != DeliveryStatus.sending) 'next_retry_at': null,
+        },
+        where: 'id = ?',
+        whereArgs: [messageId]);
+  }
+
+  Future<List<ChatMessage>> pendingOutgoingMessages() async {
+    final rows = await (await _db).query(
+      'messages',
+      where: "delivery_status = 'sending'",
+      orderBy: 'created_at, id',
+    );
+    return rows.map(_messageFromRow).toList();
+  }
+
+  Future<int> incrementRetry(String messageId, DateTime nextRetryAt) async {
+    final db = await _db;
+    await db.rawUpdate('''
+      UPDATE messages SET retry_count = retry_count + 1, next_retry_at = ?
+      WHERE id = ? AND delivery_status = 'sending'
+    ''', [nextRetryAt.toUtc().toIso8601String(), messageId]);
+    final rows = await db.query('messages',
+        columns: ['retry_count'], where: 'id = ?', whereArgs: [messageId]);
+    return rows.isEmpty ? 0 : rows.single['retry_count'] as int;
   }
 
   @override
@@ -747,11 +888,15 @@ class LocalVeyraRepository
         id: row['id']! as String,
         conversationId: row['conversation_id']! as String,
         senderUserId: row['sender_user_id']! as String,
+        senderDeviceId: row['sender_device_id'] as String?,
         type: MessageType.values.byName(row['type']! as String),
         content: row['content']! as String,
         replyToMessageId: row['reply_to_message_id'] as String?,
         createdAt: DateTime.parse(row['created_at']! as String),
         updatedAt: DateTime.parse(row['updated_at']! as String),
+        serverReceivedAt: row['server_received_at'] == null
+            ? null
+            : DateTime.parse(row['server_received_at']! as String),
         deliveryStatus:
             DeliveryStatus.values.byName(row['delivery_status']! as String),
         isEdited: row['is_edited'] == 1,
@@ -762,11 +907,14 @@ class LocalVeyraRepository
         'id': message.id,
         'conversation_id': message.conversationId,
         'sender_user_id': message.senderUserId,
+        'sender_device_id': message.senderDeviceId,
         'type': message.type.name,
         'content': message.content,
         'reply_to_message_id': message.replyToMessageId,
         'created_at': message.createdAt.toUtc().toIso8601String(),
         'updated_at': message.updatedAt.toUtc().toIso8601String(),
+        'server_received_at':
+            message.serverReceivedAt?.toUtc().toIso8601String(),
         'delivery_status': message.deliveryStatus.name,
         'is_edited': message.isEdited ? 1 : 0,
         'is_deleted': message.isDeleted ? 1 : 0,

@@ -120,6 +120,15 @@ class DeviceRemoteDataSource {
   Future<void> revoke(String id) => _api.deleteJson('/devices/$id');
 }
 
+class ConversationRemoteDataSource {
+  ConversationRemoteDataSource(this._api);
+  final ApiClient _api;
+
+  Future<List<Map<String, dynamic>>> list() async =>
+      ((await _api.getJson('/conversations'))['items'] as List)
+          .cast<Map<String, dynamic>>();
+}
+
 class DeviceIdentity {
   DeviceIdentity(this._tokens);
   final TokenStorage _tokens;

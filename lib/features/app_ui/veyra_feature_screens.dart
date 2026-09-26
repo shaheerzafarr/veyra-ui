@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
@@ -206,6 +208,7 @@ class VeyraConversationScreen extends ConsumerStatefulWidget {
 class _VeyraConversationScreenState
     extends ConsumerState<VeyraConversationScreen> {
   final _composer = TextEditingController();
+  Timer? _typingTimer;
   final _fallbackMessages = <_Message>[
     const _Message('Hey! How is it going?', false, '9:12 PM'),
     const _Message(
@@ -226,6 +229,10 @@ class _VeyraConversationScreenState
 
   @override
   void dispose() {
+    _typingTimer?.cancel();
+    if (widget.conversationId case final id?) {
+      ref.read(veyraControllerProvider).setTyping(id, false);
+    }
     _composer.dispose();
     super.dispose();
   }
@@ -242,6 +249,7 @@ class _VeyraConversationScreenState
       return;
     }
     _composer.clear();
+    ref.read(veyraControllerProvider).setTyping(id, false);
     await ref.read(veyraControllerProvider).sendMessage(id, text);
   }
 
@@ -312,7 +320,13 @@ class _VeyraConversationScreenState
                               ? 'Request pending'
                               : widget.group
                                   ? '5 members'
-                                  : 'Online',
+                                  : widget.conversationId != null &&
+                                          controller.typingUsers.containsKey(
+                                              widget.conversationId)
+                                      ? 'Typing...'
+                                      : controller.realtimeEnabled
+                                          ? controller.connectionState.name
+                                          : 'Online',
                           style: TextStyle(
                               fontSize: 13,
                               color: widget.pending
@@ -394,6 +408,18 @@ class _VeyraConversationScreenState
         if (!widget.pending)
           _Composer(
               controller: _composer,
+              onChanged: (value) {
+                final id = widget.conversationId;
+                if (id == null) return;
+                ref
+                    .read(veyraControllerProvider)
+                    .setTyping(id, value.trim().isNotEmpty);
+                _typingTimer?.cancel();
+                _typingTimer = Timer(
+                    const Duration(seconds: 3),
+                    () =>
+                        ref.read(veyraControllerProvider).setTyping(id, false));
+              },
               onSend: _send,
               onVoice: () => Navigator.push(
                   context,
@@ -1579,9 +1605,11 @@ class _Composer extends StatelessWidget {
       {required this.controller,
       required this.onSend,
       required this.onAttach,
-      required this.onVoice});
+      required this.onVoice,
+      required this.onChanged});
   final TextEditingController controller;
   final VoidCallback onSend, onAttach, onVoice;
+  final ValueChanged<String> onChanged;
   @override
   Widget build(BuildContext context) => SafeArea(
       top: false,
@@ -1594,6 +1622,7 @@ class _Composer extends StatelessWidget {
                     minLines: 1,
                     maxLines: 4,
                     textInputAction: TextInputAction.send,
+                    onChanged: onChanged,
                     onSubmitted: (_) => onSend(),
                     decoration: InputDecoration(
                         hintText: 'Message…',

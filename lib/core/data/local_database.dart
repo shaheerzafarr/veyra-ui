@@ -6,7 +6,7 @@ class VeyraDatabase {
       : _factory = factory ?? databaseFactory,
         _explicitPath = path;
 
-  static const schemaVersion = 1;
+  static const schemaVersion = 2;
   final DatabaseFactory _factory;
   final String? _explicitPath;
   Database? _database;
@@ -39,6 +39,17 @@ class VeyraDatabase {
     // Additive, version-by-version migrations are added here. Never delete the
     // database to evolve the schema.
     if (from < 1) await _createV1(db);
+    if (from < 2) {
+      await db.execute('ALTER TABLE messages ADD COLUMN sender_device_id TEXT');
+      await db
+          .execute('ALTER TABLE messages ADD COLUMN server_received_at TEXT');
+      await db.execute(
+          'ALTER TABLE messages ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0');
+      await db.execute('ALTER TABLE messages ADD COLUMN next_retry_at TEXT');
+      await db.execute(
+        "CREATE INDEX messages_outbox ON messages(delivery_status, next_retry_at) WHERE delivery_status = 'sending'",
+      );
+    }
   }
 
   Future<void> _createV1(DatabaseExecutor db) async {
@@ -140,21 +151,30 @@ class VeyraDatabase {
         conversation_id TEXT NOT NULL REFERENCES conversations(id)
           ON DELETE CASCADE,
         sender_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        sender_device_id TEXT,
         type TEXT NOT NULL CHECK(type IN
           ('text','image','video','document','audio','voice','system')),
         content TEXT NOT NULL,
         reply_to_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
+        server_received_at TEXT,
         delivery_status TEXT NOT NULL CHECK(delivery_status IN
           ('sending','sent','delivered','read','failed')),
         is_edited INTEGER NOT NULL DEFAULT 0,
-        is_deleted INTEGER NOT NULL DEFAULT 0
+        is_deleted INTEGER NOT NULL DEFAULT 0,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        next_retry_at TEXT
       )
     ''');
     await db.execute('''
       CREATE INDEX messages_conversation_time
       ON messages(conversation_id, created_at DESC)
+    ''');
+    await db.execute('''
+      CREATE INDEX messages_outbox
+      ON messages(delivery_status, next_retry_at)
+      WHERE delivery_status = 'sending'
     ''');
   }
 
