@@ -172,6 +172,10 @@ class AppSettings {
     this.profilePhotoVisibility = 'everyone',
     this.requestAudience = 'everyone',
     this.wifiOnlyDownloads = false,
+    this.imageAutoDownload = 'wifi',
+    this.audioAutoDownload = 'wifi',
+    this.videoAutoDownload = 'never',
+    this.documentAutoDownload = 'never',
     this.fontScale = 1,
   });
 
@@ -183,6 +187,10 @@ class AppSettings {
   final String profilePhotoVisibility;
   final String requestAudience;
   final bool wifiOnlyDownloads;
+  final String imageAutoDownload;
+  final String audioAutoDownload;
+  final String videoAutoDownload;
+  final String documentAutoDownload;
   final double fontScale;
 
   AppSettings copyWith({
@@ -193,6 +201,10 @@ class AppSettings {
     String? profilePhotoVisibility,
     String? requestAudience,
     bool? wifiOnlyDownloads,
+    String? imageAutoDownload,
+    String? audioAutoDownload,
+    String? videoAutoDownload,
+    String? documentAutoDownload,
     double? fontScale,
   }) =>
       AppSettings(
@@ -206,6 +218,10 @@ class AppSettings {
             profilePhotoVisibility ?? this.profilePhotoVisibility,
         requestAudience: requestAudience ?? this.requestAudience,
         wifiOnlyDownloads: wifiOnlyDownloads ?? this.wifiOnlyDownloads,
+        imageAutoDownload: imageAutoDownload ?? this.imageAutoDownload,
+        audioAutoDownload: audioAutoDownload ?? this.audioAutoDownload,
+        videoAutoDownload: videoAutoDownload ?? this.videoAutoDownload,
+        documentAutoDownload: documentAutoDownload ?? this.documentAutoDownload,
         fontScale: fontScale ?? this.fontScale,
       );
 }

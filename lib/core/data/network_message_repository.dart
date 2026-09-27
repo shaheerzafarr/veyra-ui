@@ -4,9 +4,12 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import '../models/entities.dart';
+import '../models/attachment.dart';
+import '../network/attachment_remote_data_source.dart';
 import '../network/messaging_socket.dart';
 import '../network/remote_data_sources.dart';
 import '../../security/e2ee_service.dart';
+import '../../security/attachment_crypto_service.dart';
 import '../../security/models/e2ee_models.dart';
 import '../../security/session_operation_coordinator.dart';
 import 'repositories.dart';
@@ -35,12 +38,16 @@ class NetworkMessageRepository
     required Future<String> Function() deviceId,
     required E2eeService e2ee,
     required CryptoRemoteDataSource crypto,
+    AttachmentRemoteDataSource? attachments,
+    AttachmentCryptoService? attachmentCrypto,
     required bool allowDevelopmentPlaintextTransport,
   })  : _local = local,
         _socket = socket,
         _deviceId = deviceId,
         _e2ee = e2ee,
         _crypto = crypto,
+        _attachments = attachments,
+        _attachmentCrypto = attachmentCrypto,
         _allowDevelopmentPlaintextTransport =
             allowDevelopmentPlaintextTransport {
     _eventSubscription = _socket.events.listen(_handleEvent);
@@ -52,6 +59,8 @@ class NetworkMessageRepository
   final Future<String> Function() _deviceId;
   final E2eeService _e2ee;
   final CryptoRemoteDataSource _crypto;
+  final AttachmentRemoteDataSource? _attachments;
+  final AttachmentCryptoService? _attachmentCrypto;
   final SessionOperationCoordinator _sessionOperations =
       SessionOperationCoordinator();
   final bool _allowDevelopmentPlaintextTransport;
@@ -116,6 +125,129 @@ class NetworkMessageRepository
     return message;
   }
 
+  Future<ChatMessage> sendAttachmentDescriptor(
+    String conversationId,
+    String senderId,
+    AttachmentDescriptor descriptor,
+  ) async {
+    if (_activeUserId == null || !_e2eeReady || _localAddress == null) {
+      throw StateError('Secure messaging is unavailable');
+    }
+    final message = await _local.createOutgoingAttachmentMessage(
+      conversationId,
+      senderId,
+      await _deviceId(),
+      descriptor,
+    );
+    await sendPreparedAttachment(message, descriptor);
+    return message;
+  }
+
+  Future<ChatMessage> stageAttachment({
+    required String attachmentId,
+    required String conversationId,
+    required String senderId,
+    required AttachmentKind kind,
+    required String mimeType,
+    required String originalFilename,
+    required int plaintextSize,
+    required String sourcePath,
+  }) async {
+    if (_activeUserId == null || !_e2eeReady || _localAddress == null) {
+      throw StateError('Secure messaging is unavailable');
+    }
+    return _local.stageOutgoingAttachment(
+      attachmentId: attachmentId,
+      conversationId: conversationId,
+      senderId: senderId,
+      senderDeviceId: await _deviceId(),
+      kind: kind,
+      mimeType: mimeType,
+      originalFilename: originalFilename,
+      plaintextSize: plaintextSize,
+      sourcePath: sourcePath,
+    );
+  }
+
+  Future<void> sendPreparedAttachment(
+      ChatMessage message, AttachmentDescriptor descriptor) async {
+    if (_activeUserId == null || !_e2eeReady || _localAddress == null) {
+      throw StateError('Secure messaging is unavailable');
+    }
+    await _attachmentCrypto?.storeSecret(
+        descriptor.attachmentId, descriptor.encode());
+    await _local.updateAttachmentState(
+        descriptor.attachmentId, AttachmentTransferState.descriptorPending,
+        progress: 1);
+    await _e2eeAttachment(message, descriptor);
+  }
+
+  Future<void> retryAttachmentMessage(String messageId) async {
+    final message = await _local.getMessage(messageId);
+    if (message == null) throw StateError('Attachment message is unavailable');
+    await _submit(message);
+  }
+
+  Future<void> _e2eeAttachment(
+      ChatMessage message, AttachmentDescriptor descriptor) async {
+    await _local.updateAttachmentState(
+        descriptor.attachmentId, AttachmentTransferState.sending,
+        progress: 1);
+    final conversation = await _local.getConversation(message.conversationId);
+    final recipientDeviceId = conversation?.remoteDeviceId;
+    if (recipientDeviceId == null || _localAddress == null) {
+      throw StateError('Recipient device is unavailable');
+    }
+    final participants = await _local.getParticipants(message.conversationId);
+    final recipientUserId = participants
+        .map((user) => user.id)
+        .firstWhere((id) => id != _activeUserId);
+    final remote = DeviceAddress(
+      userId: recipientUserId,
+      deviceId: recipientDeviceId,
+    );
+    final plaintext = Uint8List.fromList(utf8.encode(jsonEncode({
+      'type': 'attachment',
+      'descriptor': descriptor.toJson(),
+      'message_id': message.id,
+      'conversation_id': message.conversationId,
+      'sender_user_id': _activeUserId,
+      'sender_device_id': _localAddress!.deviceId,
+      'recipient_user_id': recipientUserId,
+      'recipient_device_id': recipientDeviceId,
+      'client_created_at': message.createdAt.toUtc().toIso8601String(),
+    })));
+    try {
+      final envelope = await _sessionOperations.synchronized(remote, () async {
+        if (!await _e2ee.hasSession(remote)) {
+          await _e2ee.establishSession(
+              remote, await _crypto.fetchBundle(remote));
+        }
+        return _e2ee.encrypt(
+          messageId: message.id,
+          conversationId: message.conversationId,
+          sender: _localAddress!,
+          recipient: remote,
+          plaintext: plaintext,
+        );
+      });
+      final transport = <String, dynamic>{
+        'message_id': envelope.messageId,
+        'conversation_id': envelope.conversationId,
+        'recipient_device_id': envelope.recipient.deviceId,
+        'transport_security': 'e2ee',
+        'protocol_version': envelope.protocolVersion,
+        'message_type': envelope.messageType,
+        'ciphertext': base64Encode(envelope.ciphertext),
+        'client_created_at': message.createdAt.toUtc().toIso8601String(),
+      };
+      await _local.persistEncryptedEnvelope(message.id, jsonEncode(transport));
+      await _sendEncryptedEnvelope(message, transport);
+    } finally {
+      plaintext.fillRange(0, plaintext.length, 0);
+    }
+  }
+
   Future<void> _submit(ChatMessage message) async {
     if (message.encryptedEnvelope case final stored?) {
       await _sendEncryptedEnvelope(message, jsonDecode(stored));
@@ -124,6 +256,29 @@ class NetworkMessageRepository
     if (!_e2eeReady || _localAddress == null) {
       await _local.updateDeliveryStatus(message.id, DeliveryStatus.failed);
       _updates.add(MessagingUpdate(conversationId: message.conversationId));
+      return;
+    }
+    if (message.type != MessageType.text) {
+      final attachment = await _local.getAttachmentForMessage(message.id);
+      if (attachment == null ||
+          !const {
+            AttachmentTransferState.descriptorPending,
+            AttachmentTransferState.sending,
+          }.contains(attachment.transferState)) {
+        return;
+      }
+      try {
+        final secret =
+            await _attachmentCrypto?.readSecret(attachment.attachmentId);
+        if (secret == null) throw StateError('Attachment key unavailable');
+        final descriptor = AttachmentDescriptor.fromJson(
+            (jsonDecode(secret) as Map).cast<String, dynamic>());
+        await _e2eeAttachment(message, descriptor);
+      } catch (_) {
+        await _local.updateAttachmentState(
+            attachment.attachmentId, AttachmentTransferState.failed,
+            failureCode: 'descriptor_encryption_failed');
+      }
       return;
     }
     final conversation = await _local.getConversation(message.conversationId);
@@ -205,6 +360,14 @@ class NetworkMessageRepository
     for (final message in await _local.pendingOutgoingMessages()) {
       await _submit(message);
     }
+    for (final attachment in await _local.recoverableAttachments()) {
+      final message = await _local.getMessage(attachment.messageId);
+      if (message?.deliveryStatus == DeliveryStatus.sent &&
+          attachment.transferState ==
+              AttachmentTransferState.descriptorPending) {
+        await _registerAttachment(attachment, message!.id);
+      }
+    }
     _socket.send('sync.request', const {});
   }
 
@@ -226,6 +389,10 @@ class NetworkMessageRepository
         serverReceivedAt:
             DateTime.parse(payload['server_received_at'] as String),
       );
+      final attachment = await _local.getAttachmentForMessage(id);
+      if (attachment != null) {
+        await _registerAttachment(attachment, id);
+      }
       _updates.add(const MessagingUpdate());
       return;
     }
@@ -294,6 +461,27 @@ class NetworkMessageRepository
     }
   }
 
+  Future<void> _registerAttachment(
+      LocalAttachment attachment, String messageId) async {
+    if (_attachments == null) return;
+    try {
+      await _attachments.register(attachment.attachmentId, messageId);
+      final ciphertextPath = attachment.ciphertextPath;
+      if (ciphertextPath != null) {
+        await _attachmentCrypto?.deletePrivateFile(ciphertextPath);
+      }
+      await _local.updateAttachmentState(
+          attachment.attachmentId, AttachmentTransferState.sent,
+          clearCiphertextPath: true);
+    } catch (_) {
+      await _local.updateAttachmentState(
+        attachment.attachmentId,
+        AttachmentTransferState.descriptorPending,
+        failureCode: 'descriptor_registration_failed',
+      );
+    }
+  }
+
   static const _developmentOnlyPlaintextTransport = 'development_plaintext';
 
   Future<void> _prepareE2ee(Map<String, dynamic> payload) async {
@@ -355,7 +543,7 @@ class NetworkMessageRepository
     );
     final inner = jsonDecode(utf8.decode(decrypted.plaintext));
     if (inner is! Map<String, dynamic> ||
-        inner['type'] != 'text' ||
+        !const {'text', 'attachment'}.contains(inner['type']) ||
         inner['message_id'] != messageId ||
         inner['conversation_id'] != envelope.conversationId ||
         inner['sender_user_id'] != sender.userId ||
@@ -365,13 +553,20 @@ class NetworkMessageRepository
       return;
     }
     final receivedAt = DateTime.parse(payload['server_received_at'] as String);
+    final isAttachment = inner['type'] == 'attachment';
+    final descriptor = isAttachment
+        ? AttachmentDescriptor.fromJson(
+            (inner['descriptor'] as Map).cast<String, dynamic>())
+        : null;
     final message = ChatMessage(
       id: messageId,
       conversationId: envelope.conversationId,
       senderUserId: sender.userId,
       senderDeviceId: sender.deviceId,
-      type: MessageType.text,
-      content: inner['body'] as String,
+      type: descriptor == null
+          ? MessageType.text
+          : MessageType.values.byName(descriptor.kind.name),
+      content: descriptor?.originalFilename ?? inner['body'] as String,
       replyToMessageId: inner['reply_to'] as String?,
       createdAt: DateTime.parse(inner['client_created_at'] as String),
       updatedAt: receivedAt,
@@ -385,7 +580,13 @@ class NetworkMessageRepository
       receivedAt,
       remoteDeviceId: sender.deviceId,
     );
-    await _local.persistIncomingMessage(message);
+    if (descriptor == null) {
+      await _local.persistIncomingMessage(message);
+    } else {
+      await _attachmentCrypto?.storeSecret(
+          descriptor.attachmentId, descriptor.encode());
+      await _local.persistIncomingAttachment(message, descriptor);
+    }
     _socket.send('message.delivered', {'message_id': message.id});
     _updates.add(MessagingUpdate(conversationId: message.conversationId));
   }

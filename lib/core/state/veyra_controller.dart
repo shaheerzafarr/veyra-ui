@@ -2,8 +2,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/network_message_repository.dart';
+import '../data/attachment_coordinator.dart';
 import '../data/repositories.dart';
 import '../models/entities.dart';
+import '../models/attachment.dart';
 import '../models/public_profile.dart';
 import '../network/messaging_socket.dart';
 
@@ -18,10 +20,12 @@ class VeyraController extends ChangeNotifier {
     required MessageRepository messages,
     required ContactRequestRepository requests,
     required SettingsRepository settings,
+    AttachmentCoordinator? attachments,
   })  : _users = users,
         _conversations = conversations,
         _messages = messages,
         _requests = requests,
+        _attachments = attachments,
         _settingsRepository = settings {
     if (_messages is RealtimeMessageActions) {
       (_messages as RealtimeMessageActions).updates.listen(_onMessagingUpdate);
@@ -33,6 +37,7 @@ class VeyraController extends ChangeNotifier {
   final MessageRepository _messages;
   final ContactRequestRepository _requests;
   final SettingsRepository _settingsRepository;
+  final AttachmentCoordinator? _attachments;
 
   bool isLoading = true;
   String? errorMessage;
@@ -46,6 +51,7 @@ class VeyraController extends ChangeNotifier {
   final Map<String, String> typingUsers = {};
   String? _activeConversationId;
   bool realtimeEnabled = false;
+  bool _attachmentRecoveryRunning = false;
 
   MessagingConnectionState get connectionState =>
       _messages is RealtimeMessageActions
@@ -56,6 +62,7 @@ class VeyraController extends ChangeNotifier {
     if (_messages is! RealtimeMessageActions) return;
     realtimeEnabled = true;
     await (_messages as RealtimeMessageActions).start(activeUser.id);
+    await _attachments?.recoverPending();
     notifyListeners();
   }
 
@@ -69,6 +76,14 @@ class VeyraController extends ChangeNotifier {
 
   Future<void> _onMessagingUpdate(MessagingUpdate update) async {
     if (!realtimeEnabled) return;
+    if (!_attachmentRecoveryRunning && _attachments != null) {
+      _attachmentRecoveryRunning = true;
+      try {
+        await _attachments.recoverPending();
+      } finally {
+        _attachmentRecoveryRunning = false;
+      }
+    }
     if (update.conversationId case final conversationId?) {
       if (_messageCache.containsKey(conversationId)) {
         _messageCache[conversationId] =
@@ -249,6 +264,59 @@ class VeyraController extends ChangeNotifier {
     _messageCache.putIfAbsent(conversationId, () => []).add(message);
     conversationSummaries =
         await _conversations.getConversations(activeUser.id);
+    notifyListeners();
+  }
+
+  Future<void> sendAttachment(
+    String conversationId,
+    String path,
+    AttachmentKind kind, {
+    void Function(AttachmentTransferState state, double progress)? onProgress,
+    void Function(String attachmentId)? onAttachmentCreated,
+    int? durationMilliseconds,
+  }) async {
+    final attachments = _attachments;
+    if (attachments == null) throw StateError('Attachments are unavailable');
+    final message = await attachments.sendFile(
+      conversationId: conversationId,
+      senderId: activeUser.id,
+      inputPath: path,
+      kind: kind,
+      onProgress: onProgress,
+      onAttachmentCreated: onAttachmentCreated,
+      durationMilliseconds: durationMilliseconds,
+    );
+    _messageCache.putIfAbsent(conversationId, () => []).add(message);
+    notifyListeners();
+  }
+
+  Future<LocalAttachment?> attachmentForMessage(String messageId) =>
+      _attachments == null
+          ? Future.value(null)
+          : _attachments.attachmentForMessage(messageId);
+
+  Future<String> downloadAttachment(String attachmentId,
+      {void Function(AttachmentTransferState, double)? onProgress}) {
+    final attachments = _attachments;
+    if (attachments == null) throw StateError('Attachments are unavailable');
+    return attachments.download(attachmentId, onProgress: onProgress);
+  }
+
+  Future<void> retryAttachment(String attachmentId,
+          {void Function(AttachmentTransferState, double)? onProgress}) =>
+      _attachments!.retry(attachmentId, onProgress: onProgress);
+
+  Future<void> cancelAttachment(String attachmentId) =>
+      _attachments!.cancel(attachmentId);
+
+  Future<AttachmentStorageUsage> attachmentStorageUsage() =>
+      _attachments == null
+          ? Future.value(const AttachmentStorageUsage(
+              images: 0, videos: 0, documents: 0, audioAndVoice: 0))
+          : _attachments.storageUsage();
+
+  Future<void> clearAttachmentCache() async {
+    await _attachments?.clearCache();
     notifyListeners();
   }
 

@@ -7,7 +7,14 @@ plugins {
 android {
     namespace = "com.example.veyra"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    // Keep the native Signal/Flutter toolchain reproducible. This matches the
+    // version selected by the current Flutter SDK and installed in CI/dev.
+    ndkVersion = "28.2.13676358"
+    externalNativeBuild {
+        cmake {
+            version = "3.22.1"
+        }
+    }
 
     compileOptions {
         isCoreLibraryDesugaringEnabled = true

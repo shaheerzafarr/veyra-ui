@@ -18,6 +18,11 @@ class E2eeBridge(
     private val worker = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
     private var engine: LibSignalEngine? = null
+    private val attachmentCipher = AttachmentCipher(context.applicationContext)
+    private val attachmentSecrets = KeystoreBackedStateStore(
+        context.applicationContext,
+        "attachments",
+    ).also { it.ensureProtectionKey() }
 
     fun register() {
         channel.setMethodCallHandler(this)
@@ -112,6 +117,45 @@ class E2eeBridge(
             engine.deleteSession(userId, deviceId)
             true
         }
+        "encryptAttachment" -> attachmentCipher.encrypt(
+            requiredString(arguments(call), "inputPath")
+        )
+        "decryptAttachment" -> {
+            val args = arguments(call)
+            attachmentCipher.decrypt(
+                requiredString(args, "ciphertextPath"),
+                requiredString(args, "key"),
+                requiredString(args, "nonce"),
+            )
+        }
+        "deletePrivateAttachmentFile" -> attachmentCipher.deletePrivateFile(
+            requiredString(arguments(call), "path")
+        )
+        "cleanupAbandonedAttachmentFiles" -> {
+            val args = arguments(call)
+            val retained = (args["retainedPaths"] as? List<*>)
+                ?.mapNotNull { it as? String }
+                ?: emptyList()
+            val olderThan = (args["olderThanEpochMs"] as? Number)?.toLong()
+                ?: throw EngineFailure("ATTACHMENT_FILE_INVALID", "Cleanup cutoff is missing")
+            attachmentCipher.cleanupAbandonedFiles(retained, olderThan)
+        }
+        "storeAttachmentSecret" -> {
+            val args = arguments(call)
+            val value = requiredString(args, "value").toByteArray(Charsets.UTF_8)
+            attachmentSecrets.write(attachmentRecord(requiredString(args, "attachmentId")), value)
+            true
+        }
+        "readAttachmentSecret" -> {
+            val record = attachmentRecord(requiredString(arguments(call), "attachmentId"))
+            attachmentSecrets.read(record)?.let { bytes ->
+                try { String(bytes, Charsets.UTF_8) } finally { bytes.fill(0) }
+            } ?: throw EngineFailure("ATTACHMENT_KEY_MISSING", "Attachment key is unavailable")
+        }
+        "deleteAttachmentSecret" -> {
+            attachmentSecrets.delete(attachmentRecord(requiredString(arguments(call), "attachmentId")))
+            true
+        }
         else -> throw EngineFailure("UNSUPPORTED_PROTOCOL", "Unsupported secure operation")
     }
 
@@ -137,6 +181,12 @@ class E2eeBridge(
 
     private fun requiredEngine(): LibSignalEngine =
         engine ?: throw EngineFailure("E2EE_NOT_INITIALIZED", "Secure messaging is unavailable")
+
+    private fun attachmentRecord(value: String): String = try {
+        "attachment_${java.util.UUID.fromString(value)}"
+    } catch (_: IllegalArgumentException) {
+        throw EngineFailure("ATTACHMENT_KEY_INVALID", "Attachment identifier is invalid")
+    }
 
     companion object {
         private const val CHANNEL_NAME = "com.veyra/e2ee"

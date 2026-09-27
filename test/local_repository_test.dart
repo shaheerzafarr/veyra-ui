@@ -5,6 +5,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:veyra/core/data/local_database.dart';
 import 'package:veyra/core/data/repositories.dart';
 import 'package:veyra/core/models/entities.dart';
+import 'package:veyra/core/models/attachment.dart';
 
 void main() {
   setUpAll(sqfliteFfiInit);
@@ -71,6 +72,47 @@ void main() {
     await expectLater(
       repository.createRequest(alice.id, bob.id, 'Trying again'),
       throwsStateError,
+    );
+  });
+
+  test('attachment journal persists states and prevents duplicate IDs',
+      () async {
+    final users = await repository.getUsers();
+    final sender = users.first;
+    final conversation = (await repository.getConversations(sender.id)).first;
+    const attachmentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    final message = await repository.stageOutgoingAttachment(
+      attachmentId: attachmentId,
+      conversationId: conversation.conversation.id,
+      senderId: sender.id,
+      senderDeviceId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      kind: AttachmentKind.image,
+      mimeType: 'image/png',
+      originalFilename: 'photo.png',
+      plaintextSize: 128,
+      sourcePath: 'source.png',
+    );
+    await repository.updateAttachmentPrepared(attachmentId,
+        objectId: 'attachments/opaque',
+        ciphertextPath: 'private.ciphertext',
+        encryptedSize: 144);
+    final stored = await repository.getAttachmentForMessage(message.id);
+    expect(stored?.transferState, AttachmentTransferState.encrypted);
+    expect(stored?.ciphertextPath, 'private.ciphertext');
+
+    await expectLater(
+      repository.stageOutgoingAttachment(
+        attachmentId: attachmentId,
+        conversationId: conversation.conversation.id,
+        senderId: sender.id,
+        senderDeviceId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        kind: AttachmentKind.image,
+        mimeType: 'image/png',
+        originalFilename: 'photo.png',
+        plaintextSize: 128,
+        sourcePath: 'source.png',
+      ),
+      throwsA(anything),
     );
   });
 

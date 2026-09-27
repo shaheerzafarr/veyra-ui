@@ -3,10 +3,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/data/local_database.dart';
+import 'core/data/attachment_coordinator.dart';
 import 'core/data/network_message_repository.dart';
 import 'core/data/repositories.dart';
 import 'core/data/server_identity_repository.dart';
 import 'core/network/api_client.dart';
+import 'core/network/attachment_remote_data_source.dart';
 import 'core/network/messaging_socket.dart';
 import 'core/network/remote_data_sources.dart';
 import 'core/network/token_storage.dart';
@@ -17,6 +19,7 @@ import 'features/app_ui/veyra_feature_screens.dart';
 import 'features/chats/chat_home_screen.dart';
 import 'features/discovery/discover_people_screen.dart';
 import 'security/android_e2ee_service.dart';
+import 'security/attachment_crypto_service.dart';
 import 'security/e2ee_service.dart';
 
 Future<void> main() async {
@@ -42,6 +45,8 @@ Future<void> main() async {
   );
   final deviceIdentity = DeviceIdentity(tokenStorage);
   final e2ee = AndroidE2eeService();
+  final attachmentCrypto = AndroidAttachmentCryptoService();
+  final attachmentRemote = AttachmentRemoteDataSource(api);
   final messageRepository = NetworkMessageRepository(
     local: repository,
     socket: MessagingSocket(
@@ -53,11 +58,19 @@ Future<void> main() async {
     deviceId: deviceIdentity.getOrCreate,
     e2ee: e2ee,
     crypto: CryptoRemoteDataSource(api),
+    attachments: attachmentRemote,
+    attachmentCrypto: attachmentCrypto,
     allowDevelopmentPlaintextTransport: !kReleaseMode &&
         const bool.fromEnvironment(
           'VEYRA_DEVELOPMENT_PLAINTEXT_TRANSPORT',
           defaultValue: true,
         ),
+  );
+  final attachmentCoordinator = AttachmentCoordinator(
+    remote: attachmentRemote,
+    crypto: attachmentCrypto,
+    local: repository,
+    messages: messageRepository,
   );
   final controller = VeyraController(
     users: identityRepository,
@@ -65,6 +78,7 @@ Future<void> main() async {
     messages: messageRepository,
     requests: identityRepository,
     settings: repository,
+    attachments: attachmentCoordinator,
   );
   await controller.initialize();
   final authController = AppAuthController(

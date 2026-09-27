@@ -2,6 +2,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/entities.dart';
+import '../models/attachment.dart';
 import 'local_database.dart';
 
 abstract interface class UserRepository {
@@ -387,6 +388,11 @@ class LocalVeyraRepository
       deliveryStatus: DeliveryStatus.sent,
     );
     await db.transaction((txn) async {
+      final member = Sqflite.firstIntValue(await txn.rawQuery('''
+        SELECT COUNT(*) FROM conversation_participants
+        WHERE conversation_id = ? AND user_id = ?
+      ''', [conversationId, senderId]));
+      if (member != 1) throw StateError('Sender is not a conversation member');
       await txn.insert('messages', _messageToRow(message));
       await txn.update(
           'conversations',
@@ -445,6 +451,279 @@ class LocalVeyraRepository
           whereArgs: [conversationId]);
     });
     return message;
+  }
+
+  Future<ChatMessage> createOutgoingAttachmentMessage(
+    String conversationId,
+    String senderId,
+    String senderDeviceId,
+    AttachmentDescriptor descriptor,
+  ) async {
+    final db = await _db;
+    final now = DateTime.now().toUtc();
+    final message = ChatMessage(
+      id: _uuid.v4(),
+      conversationId: conversationId,
+      senderUserId: senderId,
+      senderDeviceId: senderDeviceId,
+      type: MessageType.values.byName(descriptor.kind.name),
+      content: descriptor.originalFilename,
+      createdAt: now,
+      updatedAt: now,
+      deliveryStatus: DeliveryStatus.sending,
+    );
+    await db.transaction((txn) async {
+      final member = Sqflite.firstIntValue(await txn.rawQuery('''
+        SELECT COUNT(*) FROM conversation_participants
+        WHERE conversation_id = ? AND user_id = ?
+      ''', [conversationId, senderId]));
+      if (member != 1) throw StateError('Sender is not a conversation member');
+      await txn.insert('messages', _messageToRow(message));
+      await txn.insert('attachments', {
+        'attachment_id': descriptor.attachmentId,
+        'message_id': message.id,
+        'object_id': descriptor.objectId,
+        'kind': descriptor.kind.name,
+        'mime_type': descriptor.mimeType,
+        'original_filename': descriptor.originalFilename,
+        'plaintext_size': descriptor.plaintextSize,
+        'encrypted_size': descriptor.encryptedSize,
+        'transfer_state': AttachmentTransferState.descriptorPending.name,
+        'progress': 1.0,
+        'updated_at': now.toIso8601String(),
+        'created_at': now.toIso8601String(),
+      });
+    });
+    return message;
+  }
+
+  Future<ChatMessage> stageOutgoingAttachment({
+    required String attachmentId,
+    required String conversationId,
+    required String senderId,
+    required String senderDeviceId,
+    required AttachmentKind kind,
+    required String mimeType,
+    required String originalFilename,
+    required int plaintextSize,
+    required String sourcePath,
+  }) async {
+    final db = await _db;
+    final now = DateTime.now().toUtc();
+    final message = ChatMessage(
+      id: _uuid.v4(),
+      conversationId: conversationId,
+      senderUserId: senderId,
+      senderDeviceId: senderDeviceId,
+      type: MessageType.values.byName(kind.name),
+      content: originalFilename,
+      createdAt: now,
+      updatedAt: now,
+      deliveryStatus: DeliveryStatus.sending,
+    );
+    await db.transaction((txn) async {
+      final member = Sqflite.firstIntValue(await txn.rawQuery('''
+        SELECT COUNT(*) FROM conversation_participants
+        WHERE conversation_id = ? AND user_id = ?
+      ''', [conversationId, senderId]));
+      if (member != 1) throw StateError('Sender is not a conversation member');
+      await txn.insert('messages', _messageToRow(message));
+      await txn.insert('attachments', {
+        'attachment_id': attachmentId,
+        'message_id': message.id,
+        'object_id': '',
+        'kind': kind.name,
+        'mime_type': mimeType,
+        'original_filename': originalFilename,
+        'plaintext_size': plaintextSize,
+        'encrypted_size': plaintextSize + 16,
+        'source_path': sourcePath,
+        'transfer_state': AttachmentTransferState.preparing.name,
+        'progress': 0.0,
+        'updated_at': now.toIso8601String(),
+        'created_at': now.toIso8601String(),
+      });
+    });
+    return message;
+  }
+
+  Future<void> updateAttachmentPrepared(
+    String attachmentId, {
+    required String objectId,
+    required String ciphertextPath,
+    required int encryptedSize,
+  }) async {
+    await (await _db).update(
+        'attachments',
+        {
+          'object_id': objectId,
+          'ciphertext_path': ciphertextPath,
+          'encrypted_size': encryptedSize,
+          'transfer_state': AttachmentTransferState.encrypted.name,
+          'progress': 0.0,
+          'failure_code': null,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        },
+        where: 'attachment_id = ?',
+        whereArgs: [attachmentId]);
+  }
+
+  Future<void> persistIncomingAttachment(
+      ChatMessage message, AttachmentDescriptor descriptor) async {
+    final db = await _db;
+    await db.transaction((txn) async {
+      final existing = await txn.query('messages',
+          columns: ['id'], where: 'id = ?', whereArgs: [message.id]);
+      if (existing.isEmpty) {
+        await txn.insert('messages', _messageToRow(message));
+      }
+      await txn.insert(
+        'attachments',
+        {
+          'attachment_id': descriptor.attachmentId,
+          'message_id': message.id,
+          'object_id': descriptor.objectId,
+          'kind': descriptor.kind.name,
+          'mime_type': descriptor.mimeType,
+          'original_filename': descriptor.originalFilename,
+          'plaintext_size': descriptor.plaintextSize,
+          'encrypted_size': descriptor.encryptedSize,
+          'transfer_state': AttachmentTransferState.sent.name,
+          'progress': 0.0,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+          'created_at': DateTime.now().toUtc().toIso8601String(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    });
+  }
+
+  Future<void> updateAttachmentState(
+    String attachmentId,
+    AttachmentTransferState state, {
+    double? progress,
+    String? localPath,
+    String? failureCode,
+    bool clearCiphertextPath = false,
+    AttachmentStorageClass? storageClass,
+  }) async {
+    await (await _db).update(
+      'attachments',
+      {
+        'transfer_state': state.name,
+        if (progress != null) 'progress': progress.clamp(0.0, 1.0),
+        if (localPath != null) 'local_path': localPath,
+        if (clearCiphertextPath) 'ciphertext_path': null,
+        if (storageClass != null) 'storage_class': storageClass.name,
+        'failure_code': failureCode,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      where: 'attachment_id = ?',
+      whereArgs: [attachmentId],
+    );
+  }
+
+  Future<LocalAttachment?> getAttachment(String attachmentId) async {
+    final rows = await (await _db).query(
+      'attachments',
+      where: 'attachment_id = ?',
+      whereArgs: [attachmentId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    final row = rows.single;
+    return LocalAttachment(
+      attachmentId: row['attachment_id'] as String,
+      messageId: row['message_id'] as String,
+      objectId: row['object_id'] as String,
+      kind: AttachmentKind.values.byName(row['kind'] as String),
+      mimeType: row['mime_type'] as String,
+      originalFilename: row['original_filename'] as String,
+      plaintextSize: row['plaintext_size'] as int,
+      encryptedSize: row['encrypted_size'] as int,
+      transferState: AttachmentTransferState.values
+          .byName(row['transfer_state'] as String),
+      progress: row['progress'] as double,
+      localPath: row['local_path'] as String?,
+      sourcePath: row['source_path'] as String?,
+      ciphertextPath: row['ciphertext_path'] as String?,
+      storageClass: AttachmentStorageClass.values
+          .byName((row['storage_class'] as String?) ?? 'cache'),
+      failureCode: row['failure_code'] as String?,
+    );
+  }
+
+  Future<LocalAttachment?> getAttachmentForMessage(String messageId) async {
+    final rows = await (await _db).query('attachments',
+        columns: ['attachment_id'],
+        where: 'message_id = ?',
+        whereArgs: [messageId],
+        limit: 1);
+    if (rows.isEmpty) return null;
+    return getAttachment(rows.single['attachment_id']! as String);
+  }
+
+  Future<ChatMessage?> getMessage(String messageId) async {
+    final rows = await (await _db)
+        .query('messages', where: 'id = ?', whereArgs: [messageId], limit: 1);
+    return rows.isEmpty ? null : _messageFromRow(rows.single);
+  }
+
+  Future<List<LocalAttachment>> recoverableAttachments() async {
+    final rows = await (await _db).query('attachments',
+        columns: ['attachment_id'],
+        where: "transfer_state NOT IN ('sent','ready','cancelled','expired')",
+        orderBy: 'created_at ASC');
+    final result = <LocalAttachment>[];
+    for (final row in rows) {
+      final value = await getAttachment(row['attachment_id']! as String);
+      if (value != null) result.add(value);
+    }
+    return result;
+  }
+
+  Future<List<String>> retainedAttachmentPaths() async {
+    final rows = await (await _db)
+        .query('attachments', columns: ['local_path', 'ciphertext_path']);
+    return [
+      for (final row in rows) ...[
+        if (row['local_path'] case final String path) path,
+        if (row['ciphertext_path'] case final String path) path,
+      ]
+    ];
+  }
+
+  Future<AttachmentStorageUsage> attachmentStorageUsage() async {
+    final rows = await (await _db).rawQuery('''
+      SELECT kind, COALESCE(SUM(plaintext_size), 0) AS bytes
+      FROM attachments WHERE local_path IS NOT NULL GROUP BY kind
+    ''');
+    int bytes(String kind) => rows
+        .where((row) => row['kind'] == kind)
+        .fold(0, (sum, row) => sum + (row['bytes'] as int));
+    return AttachmentStorageUsage(
+      images: bytes('image'),
+      videos: bytes('video'),
+      documents: bytes('document'),
+      audioAndVoice: bytes('audio') + bytes('voice'),
+    );
+  }
+
+  Future<List<String>> clearAttachmentCacheRecords() async {
+    final db = await _db;
+    final rows = await db.query('attachments',
+        columns: ['attachment_id', 'local_path'],
+        where: "storage_class = 'cache' AND local_path IS NOT NULL");
+    await db.update(
+        'attachments',
+        {
+          'local_path': null,
+          'transfer_state': AttachmentTransferState.sent.name,
+          'progress': 0.0,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        },
+        where: "storage_class = 'cache' AND local_path IS NOT NULL");
+    return rows.map((row) => row['local_path']! as String).toList();
   }
 
   Future<bool> persistIncomingMessage(ChatMessage message) async {
@@ -760,6 +1039,10 @@ class LocalVeyraRepository
       profilePhotoVisibility: row['profile_photo_visibility']! as String,
       requestAudience: row['request_audience']! as String,
       wifiOnlyDownloads: row['wifi_only_downloads'] == 1,
+      imageAutoDownload: row['image_auto_download']! as String,
+      audioAutoDownload: row['audio_auto_download']! as String,
+      videoAutoDownload: row['video_auto_download']! as String,
+      documentAutoDownload: row['document_auto_download']! as String,
       fontScale: (row['font_scale']! as num).toDouble(),
     );
   }
@@ -778,6 +1061,10 @@ class LocalVeyraRepository
           'profile_photo_visibility': settings.profilePhotoVisibility,
           'request_audience': settings.requestAudience,
           'wifi_only_downloads': settings.wifiOnlyDownloads ? 1 : 0,
+          'image_auto_download': settings.imageAutoDownload,
+          'audio_auto_download': settings.audioAutoDownload,
+          'video_auto_download': settings.videoAutoDownload,
+          'document_auto_download': settings.documentAutoDownload,
           'font_scale': settings.fontScale,
         },
         conflictAlgorithm: ConflictAlgorithm.replace);

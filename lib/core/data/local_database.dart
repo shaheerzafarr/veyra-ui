@@ -6,7 +6,7 @@ class VeyraDatabase {
       : _factory = factory ?? databaseFactory,
         _explicitPath = path;
 
-  static const schemaVersion = 4;
+  static const schemaVersion = 7;
   final DatabaseFactory _factory;
   final String? _explicitPath;
   Database? _database;
@@ -58,6 +58,26 @@ class VeyraDatabase {
       await db
           .execute('ALTER TABLE messages ADD COLUMN encrypted_envelope TEXT');
     }
+    if (from < 5) await _createAttachmentTables(db);
+    if (from < 6) {
+      await db.execute('ALTER TABLE attachments ADD COLUMN source_path TEXT');
+      await db
+          .execute('ALTER TABLE attachments ADD COLUMN ciphertext_path TEXT');
+      await db.execute(
+          "ALTER TABLE attachments ADD COLUMN storage_class TEXT NOT NULL DEFAULT 'cache'");
+      await db.execute(
+          "ALTER TABLE attachments ADD COLUMN created_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'");
+    }
+    if (from < 7) {
+      await db.execute(
+          "ALTER TABLE settings ADD COLUMN image_auto_download TEXT NOT NULL DEFAULT 'wifi'");
+      await db.execute(
+          "ALTER TABLE settings ADD COLUMN audio_auto_download TEXT NOT NULL DEFAULT 'wifi'");
+      await db.execute(
+          "ALTER TABLE settings ADD COLUMN video_auto_download TEXT NOT NULL DEFAULT 'never'");
+      await db.execute(
+          "ALTER TABLE settings ADD COLUMN document_auto_download TEXT NOT NULL DEFAULT 'never'");
+    }
   }
 
   Future<void> _createV1(DatabaseExecutor db) async {
@@ -97,6 +117,10 @@ class VeyraDatabase {
         profile_photo_visibility TEXT NOT NULL DEFAULT 'everyone',
         request_audience TEXT NOT NULL DEFAULT 'everyone',
         wifi_only_downloads INTEGER NOT NULL DEFAULT 0,
+        image_auto_download TEXT NOT NULL DEFAULT 'wifi',
+        audio_auto_download TEXT NOT NULL DEFAULT 'wifi',
+        video_auto_download TEXT NOT NULL DEFAULT 'never',
+        document_auto_download TEXT NOT NULL DEFAULT 'never',
         font_scale REAL NOT NULL DEFAULT 1.0
       )
     ''');
@@ -186,6 +210,37 @@ class VeyraDatabase {
       ON messages(delivery_status, next_retry_at)
       WHERE delivery_status = 'sending'
     ''');
+    await _createAttachmentTables(db);
+  }
+
+  Future<void> _createAttachmentTables(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS attachments (
+        attachment_id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        object_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('image','video','document','audio','voice')),
+        mime_type TEXT NOT NULL,
+        original_filename TEXT NOT NULL,
+        plaintext_size INTEGER NOT NULL,
+        encrypted_size INTEGER NOT NULL,
+        local_path TEXT,
+        source_path TEXT,
+        ciphertext_path TEXT,
+        storage_class TEXT NOT NULL DEFAULT 'cache',
+        transfer_state TEXT NOT NULL,
+        progress REAL NOT NULL DEFAULT 0,
+        failure_code TEXT,
+        updated_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE UNIQUE INDEX IF NOT EXISTS attachments_message ON attachments(message_id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS attachments_state ON attachments(transfer_state, updated_at)',
+    );
   }
 
   Future<void> _seed(Database db) async {

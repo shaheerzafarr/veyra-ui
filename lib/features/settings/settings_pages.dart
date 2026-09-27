@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/models/entities.dart';
+import '../../core/models/attachment.dart';
 import '../../core/state/veyra_controller.dart';
 import '../../core/theme/app_theme.dart';
 
@@ -18,6 +19,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   bool _messageAlerts = true;
   bool _callAlerts = true;
   bool _wifiOnly = false;
+  String _imagesPolicy = 'wifi';
+  String _audioPolicy = 'wifi';
+  String _videosPolicy = 'never';
+  String _documentsPolicy = 'never';
   String _requestAudience = 'Everyone on Veyra';
   double _textScale = 1;
   String _displayName = 'Shaheer Malik';
@@ -35,6 +40,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _messageAlerts = stored.notificationsEnabled;
     _callAlerts = stored.callNotificationsEnabled;
     _wifiOnly = stored.wifiOnlyDownloads;
+    _imagesPolicy = stored.imageAutoDownload;
+    _audioPolicy = stored.audioAutoDownload;
+    _videosPolicy = stored.videoAutoDownload;
+    _documentsPolicy = stored.documentAutoDownload;
     _requestAudience = switch (stored.requestAudience) {
       'nobody' => 'Nobody',
       'discovered' => 'People I discover',
@@ -59,6 +68,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               _ => 'everyone',
             },
             wifiOnlyDownloads: _wifiOnly,
+            imageAutoDownload: _imagesPolicy,
+            audioAutoDownload: _audioPolicy,
+            videoAutoDownload: _videosPolicy,
+            documentAutoDownload: _documentsPolicy,
             fontScale: _textScale,
           ));
 
@@ -241,38 +254,82 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
 
   List<Widget> _storage() => [
         _section('STORAGE USAGE'),
-        const Card(
+        Card(
             color: VeyraColors.surface,
             child: Padding(
-                padding: EdgeInsets.all(18),
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('256 MB',
-                          style: TextStyle(
-                              fontSize: 26, fontWeight: FontWeight.w700)),
-                      SizedBox(height: 5),
-                      Text('Mock media across all chats',
-                          style: TextStyle(color: VeyraColors.muted)),
-                      SizedBox(height: 16),
-                      LinearProgressIndicator(
-                          value: .4,
-                          color: VeyraColors.emerald,
-                          backgroundColor: VeyraColors.elevated),
-                    ]))),
+                padding: const EdgeInsets.all(18),
+                child: FutureBuilder<AttachmentStorageUsage>(
+                  future: ref
+                      .read(veyraControllerProvider)
+                      .attachmentStorageUsage(),
+                  builder: (context, snapshot) {
+                    final usage = snapshot.data ??
+                        const AttachmentStorageUsage(
+                            images: 0,
+                            videos: 0,
+                            documents: 0,
+                            audioAndVoice: 0);
+                    return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(_storageSize(usage.total),
+                              style: const TextStyle(
+                                  fontSize: 26, fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 5),
+                          const Text(
+                              'Decrypted Veyra attachments on this device',
+                              style: TextStyle(color: VeyraColors.muted)),
+                          const SizedBox(height: 12),
+                          Text(
+                              'Images ${_storageSize(usage.images)} · Videos ${_storageSize(usage.videos)}'),
+                          Text(
+                              'Documents ${_storageSize(usage.documents)} · Audio ${_storageSize(usage.audioAndVoice)}'),
+                        ]);
+                  },
+                ))),
         const SizedBox(height: 16),
-        SwitchListTile(
-            title: const Text('Download on Wi-Fi only'),
-            value: _wifiOnly,
-            onChanged: (value) {
-              setState(() => _wifiOnly = value);
-              _savePreferences();
-            }),
-        const _SettingRow(
-            'Photos and videos', '116 MB', Icons.photo_library_outlined),
-        const _SettingRow('Documents', '74 MB', Icons.description_outlined),
-        const _SettingRow('Voice messages', '66 MB', Icons.mic_none_rounded),
+        _policyTile('Images', _imagesPolicy,
+            (value) => setState(() => _imagesPolicy = value)),
+        _policyTile('Audio and voice notes', _audioPolicy,
+            (value) => setState(() => _audioPolicy = value)),
+        _policyTile('Videos', _videosPolicy,
+            (value) => setState(() => _videosPolicy = value)),
+        _policyTile('Documents', _documentsPolicy,
+            (value) => setState(() => _documentsPolicy = value)),
+        ListTile(
+          leading: const Icon(Icons.cleaning_services_outlined),
+          title: const Text('Clear attachment cache'),
+          subtitle: const Text('Retained downloads are not removed'),
+          onTap: () async {
+            await ref.read(veyraControllerProvider).clearAttachmentCache();
+            if (mounted) {
+              setState(() {});
+              ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Attachment cache cleared')));
+            }
+          },
+        ),
       ];
+
+  Widget _policyTile(
+          String title, String value, void Function(String) update) =>
+      ListTile(
+        title: Text(title),
+        trailing: DropdownButton<String>(
+          value: value,
+          items: const [
+            DropdownMenuItem(value: 'wifi', child: Text('Wi-Fi')),
+            DropdownMenuItem(
+                value: 'wifiAndMobile', child: Text('Wi-Fi + mobile')),
+            DropdownMenuItem(value: 'never', child: Text('Never')),
+          ],
+          onChanged: (chosen) {
+            if (chosen == null) return;
+            update(chosen);
+            _savePreferences();
+          },
+        ),
+      );
 
   List<Widget> _security() => [
         _section('MESSAGE SECURITY'),
@@ -463,4 +520,12 @@ class _SettingRow extends StatelessWidget {
         title: Text(title),
         subtitle: Text(detail),
       );
+}
+
+String _storageSize(int bytes) {
+  if (bytes >= 1024 * 1024) {
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+  if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  return '$bytes B';
 }

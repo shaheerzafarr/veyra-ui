@@ -1,10 +1,21 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:just_audio/just_audio.dart' as ja;
+import 'package:open_filex/open_filex.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
+import 'package:video_player/video_player.dart';
 
+import '../../core/models/attachment.dart';
 import '../../core/models/entities.dart';
 import '../../core/models/public_profile.dart';
 import '../../core/state/auth_controller.dart';
@@ -260,6 +271,196 @@ class _VeyraConversationScreenState
     await ref.read(veyraControllerProvider).sendMessage(id, text);
   }
 
+  Future<void> _pickAndSendAttachment() async {
+    final conversationId = widget.conversationId;
+    if (conversationId == null || widget.group) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'Encrypted attachments are available in direct chats only.')));
+      return;
+    }
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: VeyraColors.surface,
+      builder: (context) => SafeArea(
+        child: Wrap(children: [
+          for (final entry in const [
+            ('image', 'Image', Icons.image_outlined),
+            ('camera', 'Camera', Icons.camera_alt_outlined),
+            ('video', 'Video', Icons.videocam_outlined),
+            ('document', 'Document', Icons.description_outlined),
+            ('audio', 'Audio', Icons.audio_file_outlined),
+          ])
+            ListTile(
+              leading: Icon(entry.$3, color: VeyraColors.emerald),
+              title: Text(entry.$2),
+              onTap: () => Navigator.pop(context, entry.$1),
+            ),
+        ]),
+      ),
+    );
+    if (choice == null || !mounted) return;
+    String? path;
+    AttachmentKind kind;
+    if (choice == 'camera') {
+      path = (await ImagePicker().pickImage(source: ImageSource.camera))?.path;
+      kind = AttachmentKind.image;
+    } else {
+      kind = AttachmentKind.values.byName(choice);
+      final result = await FilePicker.platform.pickFiles(
+        type: switch (kind) {
+          AttachmentKind.image => FileType.image,
+          AttachmentKind.video => FileType.video,
+          AttachmentKind.audio => FileType.audio,
+          AttachmentKind.document => FileType.custom,
+          AttachmentKind.voice => FileType.audio,
+        },
+        allowedExtensions: kind == AttachmentKind.document
+            ? const [
+                'pdf',
+                'doc',
+                'docx',
+                'xls',
+                'xlsx',
+                'ppt',
+                'pptx',
+                'txt',
+                'zip'
+              ]
+            : null,
+      );
+      path = result?.files.single.path;
+    }
+    if (path == null || !mounted) return;
+    await _sendAttachmentPath(conversationId, path, kind);
+  }
+
+  Future<void> _sendAttachmentPath(
+      String conversationId, String path, AttachmentKind kind,
+      {int? durationMilliseconds}) async {
+    var label = 'Preparing ${p.basename(path)}';
+    var progress = 0.0;
+    String? activeAttachmentId;
+    StateSetter? updateDialog;
+    unawaited(showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => StatefulBuilder(builder: (context, setState) {
+        updateDialog = setState;
+        return AlertDialog(
+          title: const Text('Sending securely'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            LinearProgressIndicator(value: progress == 0 ? null : progress),
+            const SizedBox(height: 14),
+            Text(label, style: const TextStyle(color: VeyraColors.muted)),
+          ]),
+          actions: [
+            TextButton(
+              onPressed: activeAttachmentId == null
+                  ? null
+                  : () => ref
+                      .read(veyraControllerProvider)
+                      .cancelAttachment(activeAttachmentId!),
+              child: const Text('Cancel'),
+            ),
+          ],
+        );
+      }),
+    ));
+    try {
+      await ref.read(veyraControllerProvider).sendAttachment(
+        conversationId,
+        path,
+        kind,
+        durationMilliseconds: durationMilliseconds,
+        onAttachmentCreated: (value) {
+          activeAttachmentId = value;
+          updateDialog?.call(() {});
+        },
+        onProgress: (state, value) {
+          label = '${state.name[0].toUpperCase()}${state.name.substring(1)}…';
+          progress = value;
+          updateDialog?.call(() {});
+        },
+      );
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    } catch (error) {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Attachment failed: $error')),
+        );
+      }
+    }
+  }
+
+  Future<void> _recordVoiceNote() async {
+    final conversationId = widget.conversationId;
+    if (conversationId == null) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute<void>(builder: (_) => const VoiceRecorderScreen()),
+      );
+      return;
+    }
+    if (widget.group) return;
+    final recorder = AudioRecorder();
+    if (!await recorder.hasPermission()) {
+      await recorder.dispose();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Microphone permission is required.')));
+      }
+      return;
+    }
+    final directory = await getTemporaryDirectory();
+    final path = p.join(
+        directory.path, 'voice-${DateTime.now().microsecondsSinceEpoch}.m4a');
+    await recorder.start(
+      const RecordConfig(encoder: AudioEncoder.aacLc, bitRate: 64000),
+      path: path,
+    );
+    if (!mounted) {
+      await recorder.cancel();
+      await recorder.dispose();
+      return;
+    }
+    final started = DateTime.now();
+    final send = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Recording voice note'),
+        content: const Row(children: [
+          Icon(Icons.mic_rounded, color: VeyraColors.emerald),
+          SizedBox(width: 12),
+          Text('Recording locally…'),
+        ]),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Send')),
+        ],
+      ),
+    );
+    final recordedPath = await recorder.stop();
+    await recorder.dispose();
+    if (send != true || recordedPath == null) {
+      final file = File(path);
+      if (await file.exists()) await file.delete();
+      return;
+    }
+    await _sendAttachmentPath(
+      conversationId,
+      recordedPath,
+      AttachmentKind.voice,
+      durationMilliseconds: DateTime.now().difference(started).inMilliseconds,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = ref.watch(veyraControllerProvider);
@@ -277,6 +478,7 @@ class _VeyraConversationScreenState
                   deliveryStatus: message.deliveryStatus,
                   isDeleted: message.isDeleted,
                   createdAt: message.createdAt,
+                  type: message.type,
                 ))
             .toList();
     return Scaffold(
@@ -428,14 +630,8 @@ class _VeyraConversationScreenState
                         ref.read(veyraControllerProvider).setTyping(id, false));
               },
               onSend: _send,
-              onVoice: () => Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                      builder: (_) => const VoiceRecorderScreen())),
-              onAttach: () => showModalBottomSheet<void>(
-                  context: context,
-                  backgroundColor: VeyraColors.surface,
-                  builder: (_) => const VeyraAttachmentPicker())),
+              onVoice: _recordVoiceNote,
+              onAttach: _pickAndSendAttachment),
       ]),
     );
   }
@@ -1770,8 +1966,16 @@ class _MessageBubbleState extends State<_MessageBubble> {
                           : VeyraColors.border)),
               child:
                   Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                Text(widget.message.text,
-                    style: const TextStyle(fontSize: 16, height: 1.28)),
+                if (widget.message.type == MessageType.text ||
+                    widget.message.id == null)
+                  Text(widget.message.text,
+                      style: const TextStyle(fontSize: 16, height: 1.28))
+                else
+                  _AttachmentContent(
+                    messageId: widget.message.id!,
+                    fallbackName: widget.message.text,
+                    incoming: !widget.message.mine,
+                  ),
                 const SizedBox(height: 6),
                 Row(mainAxisSize: MainAxisSize.min, children: [
                   if (_liked) ...[
@@ -1808,6 +2012,359 @@ class _MessageBubbleState extends State<_MessageBubble> {
                 ]),
               ]))));
 }
+
+class _AttachmentContent extends ConsumerStatefulWidget {
+  const _AttachmentContent({
+    required this.messageId,
+    required this.fallbackName,
+    required this.incoming,
+  });
+
+  final String messageId;
+  final String fallbackName;
+  final bool incoming;
+
+  @override
+  ConsumerState<_AttachmentContent> createState() => _AttachmentContentState();
+}
+
+class _AttachmentContentState extends ConsumerState<_AttachmentContent> {
+  LocalAttachment? _attachment;
+  AttachmentTransferState? _state;
+  double _progress = 0;
+  String? _path;
+  Object? _error;
+  ja.AudioPlayer? _audio;
+  VideoPlayerController? _video;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    final attachment = await ref
+        .read(veyraControllerProvider)
+        .attachmentForMessage(widget.messageId);
+    if (!mounted || attachment == null) return;
+    setState(() {
+      _attachment = attachment;
+      _state = attachment.transferState;
+      _progress = attachment.progress;
+      _path = attachment.localPath;
+    });
+    if (_path != null && await File(_path!).exists()) {
+      await _preparePlayer();
+      return;
+    }
+    if (widget.incoming && await _autoDownloadAllowed(attachment.kind)) {
+      await _download();
+    }
+  }
+
+  Future<bool> _autoDownloadAllowed(AttachmentKind kind) async {
+    final settings = ref.read(veyraControllerProvider).settings;
+    final raw = switch (kind) {
+      AttachmentKind.image => settings.imageAutoDownload,
+      AttachmentKind.audio ||
+      AttachmentKind.voice =>
+        settings.audioAutoDownload,
+      AttachmentKind.video => settings.videoAutoDownload,
+      AttachmentKind.document => settings.documentAutoDownload,
+    };
+    final policy = AutoDownloadPolicy.values.byName(raw);
+    final connectivity = await Connectivity().checkConnectivity();
+    return allowsAutoDownload(policy,
+        onWifi: connectivity.contains(ConnectivityResult.wifi),
+        onMobile: connectivity.contains(ConnectivityResult.mobile));
+  }
+
+  Future<void> _download() async {
+    final attachment = _attachment;
+    if (attachment == null) return;
+    setState(() => _error = null);
+    try {
+      final path = await ref.read(veyraControllerProvider).downloadAttachment(
+          attachment.attachmentId, onProgress: (state, progress) {
+        if (!mounted) return;
+        setState(() {
+          _state = state;
+          _progress = progress;
+        });
+      });
+      if (!mounted) return;
+      setState(() {
+        _path = path;
+        _state = AttachmentTransferState.ready;
+        _progress = 1;
+      });
+      await _preparePlayer();
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  Future<void> _preparePlayer() async {
+    final attachment = _attachment;
+    final path = _path;
+    if (attachment == null || path == null) return;
+    if (attachment.kind == AttachmentKind.audio ||
+        attachment.kind == AttachmentKind.voice) {
+      final player = ja.AudioPlayer();
+      await player.setFilePath(path);
+      if (!mounted) {
+        await player.dispose();
+        return;
+      }
+      setState(() => _audio = player);
+    } else if (attachment.kind == AttachmentKind.video) {
+      final controller = VideoPlayerController.file(File(path));
+      await controller.initialize();
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      controller.addListener(() {
+        if (mounted) setState(() {});
+      });
+      setState(() => _video = controller);
+    }
+  }
+
+  @override
+  void dispose() {
+    _audio?.dispose();
+    _video?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final attachment = _attachment;
+    if (attachment == null) {
+      return const SizedBox(
+          width: 180, child: LinearProgressIndicator(minHeight: 2));
+    }
+    final path = _path;
+    if (path != null && _state == AttachmentTransferState.ready) {
+      return switch (attachment.kind) {
+        AttachmentKind.image => GestureDetector(
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(
+                  builder: (_) => _FullScreenImage(path: path)),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.file(File(path),
+                  width: 260,
+                  height: 220,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => _failure('Image unavailable')),
+            ),
+          ),
+        AttachmentKind.document => _document(attachment, path),
+        AttachmentKind.video => _videoContent(),
+        AttachmentKind.audio ||
+        AttachmentKind.voice =>
+          _audioContent(attachment),
+      };
+    }
+    final failed = _error != null ||
+        _state == AttachmentTransferState.failed ||
+        _state == AttachmentTransferState.cancelled;
+    final active = const {
+      AttachmentTransferState.downloading,
+      AttachmentTransferState.downloaded,
+      AttachmentTransferState.decrypting,
+    }.contains(_state);
+    return SizedBox(
+      width: 240,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(_iconFor(attachment.kind), color: VeyraColors.emerald),
+          const SizedBox(width: 10),
+          Expanded(
+              child: Text(attachment.originalFilename,
+                  maxLines: 2, overflow: TextOverflow.ellipsis)),
+          IconButton(
+            tooltip: active
+                ? 'Cancel download'
+                : failed
+                    ? 'Retry'
+                    : 'Download',
+            onPressed: active
+                ? () => ref
+                    .read(veyraControllerProvider)
+                    .cancelAttachment(attachment.attachmentId)
+                : _download,
+            icon: Icon(active
+                ? Icons.close_rounded
+                : failed
+                    ? Icons.refresh_rounded
+                    : Icons.download_rounded),
+          ),
+        ]),
+        if (active)
+          LinearProgressIndicator(value: _progress == 0 ? null : _progress),
+        Text(
+          failed
+              ? 'Transfer failed · tap retry'
+              : active
+                  ? '${_state!.name} ${(_progress * 100).round()}%'
+                  : '${_formatBytes(attachment.plaintextSize)} · encrypted',
+          style: const TextStyle(color: VeyraColors.muted, fontSize: 12),
+        ),
+      ]),
+    );
+  }
+
+  Widget _document(LocalAttachment attachment, String path) => SizedBox(
+        width: 240,
+        child: ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.description_outlined,
+              color: VeyraColors.emerald),
+          title: Text(attachment.originalFilename,
+              maxLines: 2, overflow: TextOverflow.ellipsis),
+          subtitle: Text(
+              '${p.extension(attachment.originalFilename).replaceFirst('.', '').toUpperCase()} · ${_formatBytes(attachment.plaintextSize)}'),
+          trailing: IconButton(
+              tooltip: 'Open document',
+              onPressed: () => OpenFilex.open(path),
+              icon: const Icon(Icons.open_in_new_rounded)),
+        ),
+      );
+
+  Widget _audioContent(LocalAttachment attachment) {
+    final player = _audio;
+    if (player == null) return const CircularProgressIndicator();
+    return SizedBox(
+      width: 240,
+      child: StreamBuilder<Duration>(
+        stream: player.positionStream,
+        builder: (context, snapshot) {
+          final position = snapshot.data ?? Duration.zero;
+          final duration = player.duration ?? Duration.zero;
+          final maximum = duration.inMilliseconds.clamp(1, 1 << 31).toDouble();
+          return Row(children: [
+            StreamBuilder<ja.PlayerState>(
+              stream: player.playerStateStream,
+              builder: (context, state) => IconButton(
+                onPressed: player.playing ? player.pause : player.play,
+                icon: Icon(player.playing
+                    ? Icons.pause_circle_filled_rounded
+                    : Icons.play_circle_fill_rounded),
+                color: VeyraColors.emerald,
+                iconSize: 34,
+              ),
+            ),
+            Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Slider(
+                      min: 0,
+                      max: maximum,
+                      value: position.inMilliseconds
+                          .clamp(0, maximum.toInt())
+                          .toDouble(),
+                      onChanged: (value) =>
+                          player.seek(Duration(milliseconds: value.round())),
+                    ),
+                    Text(
+                        '${attachment.kind == AttachmentKind.voice ? 'Voice note' : 'Audio'} · ${_formatDuration(position)} / ${_formatDuration(duration)}',
+                        style: const TextStyle(
+                            fontSize: 11, color: VeyraColors.muted)),
+                  ]),
+            ),
+          ]);
+        },
+      ),
+    );
+  }
+
+  Widget _videoContent() {
+    final controller = _video;
+    if (controller == null || !controller.value.isInitialized) {
+      return const SizedBox(
+          width: 240,
+          height: 140,
+          child: Center(child: CircularProgressIndicator()));
+    }
+    final duration = controller.value.duration;
+    final position = controller.value.position;
+    return SizedBox(
+      width: 260,
+      child: Column(children: [
+        AspectRatio(
+          aspectRatio: controller.value.aspectRatio == 0
+              ? 16 / 9
+              : controller.value.aspectRatio,
+          child: Stack(alignment: Alignment.center, children: [
+            VideoPlayer(controller),
+            IconButton.filled(
+              onPressed: () => controller.value.isPlaying
+                  ? controller.pause()
+                  : controller.play(),
+              icon: Icon(controller.value.isPlaying
+                  ? Icons.pause_rounded
+                  : Icons.play_arrow_rounded),
+            ),
+          ]),
+        ),
+        VideoProgressIndicator(controller,
+            allowScrubbing: true,
+            colors:
+                const VideoProgressColors(playedColor: VeyraColors.emerald)),
+        Align(
+          alignment: Alignment.centerRight,
+          child: Text(
+              '${_formatDuration(position)} / ${_formatDuration(duration)}',
+              style: const TextStyle(fontSize: 11, color: VeyraColors.muted)),
+        ),
+      ]),
+    );
+  }
+
+  Widget _failure(String label) => SizedBox(
+      width: 220,
+      height: 120,
+      child: Center(
+          child:
+              Text(label, style: const TextStyle(color: VeyraColors.muted))));
+}
+
+class _FullScreenImage extends StatelessWidget {
+  const _FullScreenImage({required this.path});
+  final String path;
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(backgroundColor: Colors.black),
+        body: Center(child: InteractiveViewer(child: Image.file(File(path)))),
+      );
+}
+
+IconData _iconFor(AttachmentKind kind) => switch (kind) {
+      AttachmentKind.image => Icons.image_outlined,
+      AttachmentKind.video => Icons.videocam_outlined,
+      AttachmentKind.document => Icons.description_outlined,
+      AttachmentKind.audio => Icons.audio_file_outlined,
+      AttachmentKind.voice => Icons.mic_none_rounded,
+    };
+
+String _formatBytes(int bytes) {
+  if (bytes >= 1024 * 1024) {
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+  if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  return '$bytes B';
+}
+
+String _formatDuration(Duration value) =>
+    '${value.inMinutes}:${(value.inSeconds % 60).toString().padLeft(2, '0')}';
 
 class _ChatWallpaper extends StatelessWidget {
   const _ChatWallpaper();
@@ -1983,13 +2540,15 @@ class _Message {
       {this.id,
       this.deliveryStatus = DeliveryStatus.read,
       this.isDeleted = false,
-      this.createdAt});
+      this.createdAt,
+      this.type = MessageType.text});
   final String text, time;
   final bool mine;
   final String? id;
   final DeliveryStatus deliveryStatus;
   final bool isDeleted;
   final DateTime? createdAt;
+  final MessageType type;
 }
 
 class _Request {
