@@ -81,6 +81,7 @@ Future<void> main() async {
       await controller.initialize();
     },
   );
+  await authController.restoreSession();
   runApp(ProviderScope(
     overrides: [
       veyraControllerProvider.overrideWith((ref) => controller),
@@ -132,14 +133,14 @@ class _VeyraAppState extends ConsumerState<VeyraApp>
       );
 }
 
-class SplashScreen extends StatefulWidget {
+class SplashScreen extends ConsumerStatefulWidget {
   const SplashScreen({super.key});
 
   @override
-  State<SplashScreen> createState() => _SplashScreenState();
+  ConsumerState<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen>
+class _SplashScreenState extends ConsumerState<SplashScreen>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller = AnimationController(
     vsync: this,
@@ -151,8 +152,12 @@ class _SplashScreenState extends State<SplashScreen>
     super.initState();
     Future<void>.delayed(const Duration(milliseconds: 620), () {
       if (mounted) {
+        final authenticated = ref.read(authControllerProvider).isAuthenticated;
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute<void>(builder: (_) => const WelcomeScreen()),
+          MaterialPageRoute<void>(
+            builder: (_) =>
+                authenticated ? const MainNavigation() : const WelcomeScreen(),
+          ),
         );
       }
     });

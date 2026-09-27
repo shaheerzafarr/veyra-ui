@@ -92,6 +92,9 @@ void main() {
         ['/auth/register', '/auth/verify-email', '/auth/login']);
     expect(tokens.accessToken, 'access');
     expect(tokens.refreshToken, 'refresh');
+    expect(await remote.hasStoredSession(), isTrue);
+    await remote.clearStoredSession();
+    expect(await remote.hasStoredSession(), isFalse);
   });
 
   test('401 refreshes once, rotates tokens and retries the request', () async {

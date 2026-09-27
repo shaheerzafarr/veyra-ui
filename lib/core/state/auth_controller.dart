@@ -30,6 +30,7 @@ class AppAuthController extends ChangeNotifier {
   String registrationPassword = '';
   String? developmentVerificationCode;
   bool isBusy = false;
+  bool isAuthenticated = false;
   String? errorMessage;
 
   void setInvitation(String value) => invitationCode = value.trim();
@@ -61,11 +62,36 @@ class AppAuthController extends ChangeNotifier {
           deviceUuid: await _deviceIdentity.getOrCreate(),
         );
         await _onAuthenticated?.call();
+        isAuthenticated = true;
       });
 
+  Future<bool> restoreSession() async {
+    if (!await _auth.hasStoredSession()) return false;
+    try {
+      await _onAuthenticated?.call();
+      isAuthenticated = true;
+      return true;
+    } on ApiException catch (error) {
+      if (error.kind == ApiErrorKind.invalidCredentials ||
+          error.kind == ApiErrorKind.expiredSession) {
+        await _auth.clearStoredSession();
+      }
+      return false;
+    } catch (_) {
+      return false;
+    } finally {
+      notifyListeners();
+    }
+  }
+
   Future<void> logout() async {
-    await _auth.logout();
-    await _onLoggedOut?.call();
+    try {
+      await _auth.logout();
+    } finally {
+      isAuthenticated = false;
+      await _onLoggedOut?.call();
+      notifyListeners();
+    }
   }
 
   Future<bool> _run(Future<void> Function() action) async {

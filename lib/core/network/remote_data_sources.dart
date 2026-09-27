@@ -12,6 +12,12 @@ class AuthRemoteDataSource {
   final ApiClient _api;
   final TokenStorage _tokens;
 
+  Future<bool> hasStoredSession() async =>
+      await _tokens.readAccessToken() != null &&
+      await _tokens.readRefreshToken() != null;
+
+  Future<void> clearStoredSession() => _tokens.clear();
+
   Future<String?> register({
     required String invitationCode,
     required String email,

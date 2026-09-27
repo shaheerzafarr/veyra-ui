@@ -121,7 +121,11 @@ class NetworkMessageRepository
       await _sendEncryptedEnvelope(message, jsonDecode(stored));
       return;
     }
-    if (!_e2eeReady || _localAddress == null) return;
+    if (!_e2eeReady || _localAddress == null) {
+      await _local.updateDeliveryStatus(message.id, DeliveryStatus.failed);
+      _updates.add(MessagingUpdate(conversationId: message.conversationId));
+      return;
+    }
     final conversation = await _local.getConversation(message.conversationId);
     final recipientDeviceId = conversation?.remoteDeviceId;
     if (recipientDeviceId == null) {

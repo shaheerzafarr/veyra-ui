@@ -44,6 +44,7 @@ class VeyraController extends ChangeNotifier {
   List<ContactRequestView> outgoingRequests = const [];
   final Map<String, List<ChatMessage>> _messageCache = {};
   final Map<String, String> typingUsers = {};
+  String? _activeConversationId;
   bool realtimeEnabled = false;
 
   MessagingConnectionState get connectionState =>
@@ -72,6 +73,9 @@ class VeyraController extends ChangeNotifier {
       if (_messageCache.containsKey(conversationId)) {
         _messageCache[conversationId] =
             await _messages.getMessages(conversationId, limit: 100);
+      }
+      if (_activeConversationId == conversationId) {
+        await _markConversationRead(conversationId);
       }
       if (update.typingUserId case final userId?) {
         typingUsers[conversationId] = userId;
@@ -202,20 +206,33 @@ class VeyraController extends ChangeNotifier {
 
   Future<List<ChatMessage>> loadMessages(String conversationId,
       {bool force = false}) async {
-    if (!force && _messageCache.containsKey(conversationId)) {
-      return _messageCache[conversationId]!;
-    }
-    final loaded = await _messages.getMessages(conversationId, limit: 100);
-    await _conversations.markConversationRead(conversationId, activeUser.id);
-    if (_messages is RealtimeMessageActions) {
-      await (_messages as RealtimeMessageActions)
-          .markConversationRead(conversationId, settings.readReceiptsEnabled);
-    }
+    final loaded = !force && _messageCache.containsKey(conversationId)
+        ? _messageCache[conversationId]!
+        : await _messages.getMessages(conversationId, limit: 100);
+    await _markConversationRead(conversationId);
     _messageCache[conversationId] = loaded;
     conversationSummaries =
         await _conversations.getConversations(activeUser.id);
     notifyListeners();
     return loaded;
+  }
+
+  Future<void> _markConversationRead(String conversationId) async {
+    await _conversations.markConversationRead(conversationId, activeUser.id);
+    if (_messages is RealtimeMessageActions) {
+      await (_messages as RealtimeMessageActions)
+          .markConversationRead(conversationId, settings.readReceiptsEnabled);
+    }
+  }
+
+  void openConversation(String conversationId) {
+    _activeConversationId = conversationId;
+  }
+
+  void closeConversation(String conversationId) {
+    if (_activeConversationId == conversationId) {
+      _activeConversationId = null;
+    }
   }
 
   List<ChatMessage> messagesFor(String conversationId) =>

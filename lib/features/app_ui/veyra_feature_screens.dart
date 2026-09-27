@@ -224,8 +224,11 @@ class _VeyraConversationScreenState
     super.initState();
     final id = widget.conversationId;
     if (id != null) {
-      Future<void>.microtask(
-          () => ref.read(veyraControllerProvider).loadMessages(id));
+      Future<void>.microtask(() async {
+        final controller = ref.read(veyraControllerProvider);
+        controller.openConversation(id);
+        await controller.loadMessages(id);
+      });
     }
   }
 
@@ -233,7 +236,9 @@ class _VeyraConversationScreenState
   void dispose() {
     _typingTimer?.cancel();
     if (widget.conversationId case final id?) {
-      ref.read(veyraControllerProvider).setTyping(id, false);
+      final controller = ref.read(veyraControllerProvider);
+      controller.setTyping(id, false);
+      controller.closeConversation(id);
     }
     _composer.dispose();
     super.dispose();
@@ -1792,10 +1797,12 @@ class _MessageBubbleState extends State<_MessageBubble> {
                                   ? Icons.done_all_rounded
                                   : Icons.done_rounded,
                       size: 17,
-                      color:
-                          widget.message.deliveryStatus == DeliveryStatus.failed
-                              ? VeyraColors.danger
-                              : const Color(0xFF27C8F3),
+                      color: widget.message.deliveryStatus ==
+                              DeliveryStatus.failed
+                          ? VeyraColors.danger
+                          : widget.message.deliveryStatus == DeliveryStatus.read
+                              ? const Color(0xFF27C8F3)
+                              : VeyraColors.muted,
                     ),
                   ],
                 ]),
