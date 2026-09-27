@@ -64,6 +64,7 @@ class Conversation {
     required this.updatedAt,
     this.title,
     this.avatar,
+    this.remoteDeviceId,
     this.lastMessageAt,
   });
 
@@ -71,6 +72,7 @@ class Conversation {
   final ConversationType type;
   final String? title;
   final String? avatar;
+  final String? remoteDeviceId;
   final DateTime createdAt;
   final DateTime updatedAt;
   final DateTime? lastMessageAt;
@@ -113,6 +115,7 @@ class ChatMessage {
     this.senderDeviceId,
     this.serverReceivedAt,
     this.replyToMessageId,
+    this.encryptedEnvelope,
     this.isEdited = false,
     this.isDeleted = false,
   });
@@ -124,6 +127,7 @@ class ChatMessage {
   final MessageType type;
   final String content;
   final String? replyToMessageId;
+  final String? encryptedEnvelope;
   final DateTime createdAt;
   final DateTime updatedAt;
   final DateTime? serverReceivedAt;

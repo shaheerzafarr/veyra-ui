@@ -48,6 +48,7 @@ class ServerIdentityRepository
         currentUserId,
         peer.id,
         DateTime.parse(row['created_at'] as String),
+        remoteDeviceId: row['other_device_id'] as String,
       );
     }
   }

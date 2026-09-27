@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/data/local_database.dart';
@@ -15,6 +16,8 @@ import 'core/theme/app_theme.dart';
 import 'features/app_ui/veyra_feature_screens.dart';
 import 'features/chats/chat_home_screen.dart';
 import 'features/discovery/discover_people_screen.dart';
+import 'security/android_e2ee_service.dart';
+import 'security/e2ee_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -38,6 +41,7 @@ Future<void> main() async {
     conversations: conversationRemote,
   );
   final deviceIdentity = DeviceIdentity(tokenStorage);
+  final e2ee = AndroidE2eeService();
   final messageRepository = NetworkMessageRepository(
     local: repository,
     socket: MessagingSocket(
@@ -47,6 +51,13 @@ Future<void> main() async {
       deviceProvider: deviceIdentity.getOrCreate,
     ),
     deviceId: deviceIdentity.getOrCreate,
+    e2ee: e2ee,
+    crypto: CryptoRemoteDataSource(api),
+    allowDevelopmentPlaintextTransport: !kReleaseMode &&
+        const bool.fromEnvironment(
+          'VEYRA_DEVELOPMENT_PLAINTEXT_TRANSPORT',
+          defaultValue: true,
+        ),
   );
   final controller = VeyraController(
     users: identityRepository,
@@ -74,6 +85,7 @@ Future<void> main() async {
     overrides: [
       veyraControllerProvider.overrideWith((ref) => controller),
       authControllerProvider.overrideWith((ref) => authController),
+      e2eeServiceProvider.overrideWithValue(e2ee),
     ],
     child: const VeyraApp(),
   ));

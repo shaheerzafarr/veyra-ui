@@ -6,7 +6,7 @@ class VeyraDatabase {
       : _factory = factory ?? databaseFactory,
         _explicitPath = path;
 
-  static const schemaVersion = 2;
+  static const schemaVersion = 4;
   final DatabaseFactory _factory;
   final String? _explicitPath;
   Database? _database;
@@ -49,6 +49,14 @@ class VeyraDatabase {
       await db.execute(
         "CREATE INDEX messages_outbox ON messages(delivery_status, next_retry_at) WHERE delivery_status = 'sending'",
       );
+    }
+    if (from < 3) {
+      await db.execute(
+          'ALTER TABLE conversations ADD COLUMN remote_device_id TEXT');
+    }
+    if (from < 4) {
+      await db
+          .execute('ALTER TABLE messages ADD COLUMN encrypted_envelope TEXT');
     }
   }
 
@@ -115,6 +123,7 @@ class VeyraDatabase {
         type TEXT NOT NULL CHECK(type IN ('direct','group')),
         title TEXT,
         avatar TEXT,
+        remote_device_id TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         last_message_at TEXT
@@ -156,6 +165,7 @@ class VeyraDatabase {
           ('text','image','video','document','audio','voice','system')),
         content TEXT NOT NULL,
         reply_to_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+        encrypted_envelope TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         server_received_at TEXT,

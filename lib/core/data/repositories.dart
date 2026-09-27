@@ -470,12 +470,19 @@ class LocalVeyraRepository
     return inserted;
   }
 
+  Future<bool> hasMessage(String messageId) async {
+    final rows = await (await _db).query('messages',
+        columns: ['id'], where: 'id = ?', whereArgs: [messageId]);
+    return rows.isNotEmpty;
+  }
+
   Future<void> ensureDirectConversation(
     String conversationId,
     String currentUserId,
     String peerUserId,
-    DateTime createdAt,
-  ) async {
+    DateTime createdAt, {
+    String? remoteDeviceId,
+  }) async {
     final db = await _db;
     final timestamp = createdAt.toUtc().toIso8601String();
     await db.transaction((txn) async {
@@ -484,11 +491,20 @@ class LocalVeyraRepository
         {
           'id': conversationId,
           'type': 'direct',
+          'remote_device_id': remoteDeviceId,
           'created_at': timestamp,
           'updated_at': timestamp,
         },
         conflictAlgorithm: ConflictAlgorithm.ignore,
       );
+      if (remoteDeviceId != null) {
+        await txn.update(
+          'conversations',
+          {'remote_device_id': remoteDeviceId},
+          where: 'id = ? AND type = ?',
+          whereArgs: [conversationId, 'direct'],
+        );
+      }
       for (final userId in [currentUserId, peerUserId]) {
         await txn.insert(
           'conversation_participants',
@@ -522,6 +538,19 @@ class LocalVeyraRepository
         },
         where: 'id = ?',
         whereArgs: [messageId]);
+  }
+
+  Future<void> persistEncryptedEnvelope(
+      String messageId, String encryptedEnvelope) async {
+    await (await _db).update(
+      'messages',
+      {
+        'encrypted_envelope': encryptedEnvelope,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      where: "id = ? AND delivery_status = 'sending'",
+      whereArgs: [messageId],
+    );
   }
 
   Future<List<ChatMessage>> pendingOutgoingMessages() async {
@@ -877,6 +906,7 @@ class LocalVeyraRepository
         type: ConversationType.values.byName(row['type']! as String),
         title: row['title'] as String?,
         avatar: row['avatar'] as String?,
+        remoteDeviceId: row['remote_device_id'] as String?,
         createdAt: DateTime.parse(row['created_at']! as String),
         updatedAt: DateTime.parse(row['updated_at']! as String),
         lastMessageAt: row['last_message_at'] == null
@@ -892,6 +922,7 @@ class LocalVeyraRepository
         type: MessageType.values.byName(row['type']! as String),
         content: row['content']! as String,
         replyToMessageId: row['reply_to_message_id'] as String?,
+        encryptedEnvelope: row['encrypted_envelope'] as String?,
         createdAt: DateTime.parse(row['created_at']! as String),
         updatedAt: DateTime.parse(row['updated_at']! as String),
         serverReceivedAt: row['server_received_at'] == null
@@ -911,6 +942,7 @@ class LocalVeyraRepository
         'type': message.type.name,
         'content': message.content,
         'reply_to_message_id': message.replyToMessageId,
+        'encrypted_envelope': message.encryptedEnvelope,
         'created_at': message.createdAt.toUtc().toIso8601String(),
         'updated_at': message.updatedAt.toUtc().toIso8601String(),
         'server_received_at':

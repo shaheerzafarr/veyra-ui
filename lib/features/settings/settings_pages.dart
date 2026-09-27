@@ -275,6 +275,23 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       ];
 
   List<Widget> _security() => [
+        _section('MESSAGE SECURITY'),
+        Card(
+          color: VeyraColors.surface,
+          child: ListTile(
+            leading: const Icon(Icons.lock_outline_rounded,
+                color: VeyraColors.emerald),
+            title: const Text('End-to-end encryption'),
+            subtitle: const Text(
+                'Encrypted direct text · independent review pending'),
+            trailing: const Icon(Icons.chevron_right_rounded,
+                color: VeyraColors.muted),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
+              builder: (_) => const E2eeSecurityInfoScreen(),
+            )),
+          ),
+        ),
+        const SizedBox(height: 20),
         _section('ACCOUNT ACCESS'),
         const _SettingRow(
             'Change password', 'Local preview', Icons.password_rounded),
@@ -359,6 +376,53 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     ],
                   ));
         },
+      );
+}
+
+class E2eeSecurityInfoScreen extends StatelessWidget {
+  const E2eeSecurityInfoScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(title: const Text('Message security')),
+        body: ListView(
+          padding: const EdgeInsets.all(20),
+          children: const [
+            Icon(Icons.shield_outlined, size: 52, color: VeyraColors.emerald),
+            SizedBox(height: 18),
+            Text('End-to-end encryption is active',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+            SizedBox(height: 12),
+            Text(
+              'Direct one-to-one text messages use the official libsignal '
+              'implementation. Message content is encrypted on endpoint '
+              'devices; presence, typing, routing, and receipt metadata are '
+              'not hidden. Independent security review is pending.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: VeyraColors.muted, height: 1.45),
+            ),
+            SizedBox(height: 22),
+            Card(
+              color: VeyraColors.surface,
+              child: Column(children: [
+                ListTile(
+                  leading: Icon(Icons.phone_android_rounded,
+                      color: VeyraColors.emerald),
+                  title: Text('Device identity'),
+                  subtitle: Text('Protected on this Android device'),
+                ),
+                Divider(height: 1),
+                ListTile(
+                  leading: Icon(Icons.verified_user_outlined,
+                      color: VeyraColors.muted),
+                  title: Text('Security verification'),
+                  subtitle: Text('Open chat information to compare or scan'),
+                ),
+              ]),
+            ),
+          ],
+        ),
       );
 }
 

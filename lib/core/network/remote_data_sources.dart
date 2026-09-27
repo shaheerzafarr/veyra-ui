@@ -1,9 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:uuid/uuid.dart';
 
 import 'api_client.dart';
 import 'token_storage.dart';
+import '../../security/models/e2ee_models.dart';
 
 class AuthRemoteDataSource {
   AuthRemoteDataSource(this._api, this._tokens);
@@ -118,6 +120,67 @@ class DeviceRemoteDataSource {
       ((await _api.getJson('/devices'))['items'] as List)
           .cast<Map<String, dynamic>>();
   Future<void> revoke(String id) => _api.deleteJson('/devices/$id');
+}
+
+class CryptoRemoteDataSource {
+  CryptoRemoteDataSource(this._api);
+  final ApiClient _api;
+
+  Future<int> availablePreKeyCount() async {
+    final value = await _api.getJson('/devices/me/prekeys/status');
+    return value['available'] as int;
+  }
+
+  Future<void> publish(DevicePublicBundle bundle) async {
+    await _api.postJson('/devices/me/keys', body: {
+      'protocol_version': bundle.protocolVersion,
+      'registration_id': bundle.registrationId,
+      'identity_public_key': base64Encode(bundle.identityPublicKey),
+      'signed_prekey_id': bundle.signedPreKeyId,
+      'signed_prekey_public': base64Encode(bundle.signedPreKeyPublic),
+      'signed_prekey_signature': base64Encode(bundle.signedPreKeySignature),
+    });
+    if (bundle.oneTimePreKeys.isEmpty) return;
+    await _api.postJson('/devices/me/prekeys', body: {
+      'prekeys': bundle.oneTimePreKeys
+          .map((key) => {
+                'prekey_id': key.preKeyId,
+                'public_key': base64Encode(key.publicKey),
+                'kyber_prekey_id': key.kyberPreKeyId,
+                'kyber_public_key': base64Encode(key.kyberPublicKey),
+                'kyber_signature': base64Encode(key.kyberSignature),
+              })
+          .toList(),
+    });
+  }
+
+  Future<DevicePublicBundle> fetchBundle(DeviceAddress remote) async {
+    final value = await _api.getJson(
+      '/users/${remote.userId}/devices/${remote.deviceId}/prekey-bundle',
+    );
+    final oneTime = value['one_time_prekey'] as Map<String, dynamic>?;
+    if (oneTime == null) {
+      throw StateError('Recipient has no available secure pre-key');
+    }
+    return DevicePublicBundle(
+      protocolVersion: value['protocol_version'] as int,
+      registrationId: value['registration_id'] as int,
+      identityPublicKey: base64Decode(value['identity_public_key'] as String),
+      signedPreKeyId: value['signed_prekey_id'] as int,
+      signedPreKeyPublic: base64Decode(value['signed_prekey_public'] as String),
+      signedPreKeySignature:
+          base64Decode(value['signed_prekey_signature'] as String),
+      oneTimePreKeys: [
+        PublicOneTimePreKey(
+          preKeyId: oneTime['prekey_id'] as int,
+          publicKey: base64Decode(oneTime['public_key'] as String),
+          kyberPreKeyId: oneTime['kyber_prekey_id'] as int,
+          kyberPublicKey: base64Decode(oneTime['kyber_public_key'] as String),
+          kyberSignature: base64Decode(oneTime['kyber_signature'] as String),
+        ),
+      ],
+    );
+  }
 }
 
 class ConversationRemoteDataSource {

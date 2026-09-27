@@ -1,8 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 
 import '../models/entities.dart';
 import '../network/messaging_socket.dart';
+import '../network/remote_data_sources.dart';
+import '../../security/e2ee_service.dart';
+import '../../security/models/e2ee_models.dart';
+import '../../security/session_operation_coordinator.dart';
 import 'repositories.dart';
 
 class MessagingUpdate {
@@ -27,9 +33,16 @@ class NetworkMessageRepository
     required LocalVeyraRepository local,
     required MessagingSocket socket,
     required Future<String> Function() deviceId,
+    required E2eeService e2ee,
+    required CryptoRemoteDataSource crypto,
+    required bool allowDevelopmentPlaintextTransport,
   })  : _local = local,
         _socket = socket,
-        _deviceId = deviceId {
+        _deviceId = deviceId,
+        _e2ee = e2ee,
+        _crypto = crypto,
+        _allowDevelopmentPlaintextTransport =
+            allowDevelopmentPlaintextTransport {
     _eventSubscription = _socket.events.listen(_handleEvent);
     _stateSubscription = _socket.states.listen(_handleState);
   }
@@ -37,11 +50,18 @@ class NetworkMessageRepository
   final LocalVeyraRepository _local;
   final MessagingSocket _socket;
   final Future<String> Function() _deviceId;
+  final E2eeService _e2ee;
+  final CryptoRemoteDataSource _crypto;
+  final SessionOperationCoordinator _sessionOperations =
+      SessionOperationCoordinator();
+  final bool _allowDevelopmentPlaintextTransport;
   final _updates = StreamController<MessagingUpdate>.broadcast();
   final Map<String, Timer> _acceptanceTimers = {};
   late final StreamSubscription<Map<String, dynamic>> _eventSubscription;
   late final StreamSubscription<MessagingConnectionState> _stateSubscription;
   String? _activeUserId;
+  DeviceAddress? _localAddress;
+  bool _e2eeReady = false;
 
   @override
   Stream<MessagingUpdate> get updates => _updates.stream;
@@ -60,6 +80,8 @@ class NetworkMessageRepository
   @override
   Future<void> stop() async {
     _activeUserId = null;
+    _localAddress = null;
+    _e2eeReady = false;
     for (final timer in _acceptanceTimers.values) {
       timer.cancel();
     }
@@ -95,14 +117,68 @@ class NetworkMessageRepository
   }
 
   Future<void> _submit(ChatMessage message) async {
-    final sent = _socket.send('message.send', {
-      'message_id': message.id,
-      'conversation_id': message.conversationId,
-      'type': 'text',
-      'content': message.content,
-      'client_created_at': message.createdAt.toUtc().toIso8601String(),
-      'reply_to_message_id': message.replyToMessageId,
+    if (message.encryptedEnvelope case final stored?) {
+      await _sendEncryptedEnvelope(message, jsonDecode(stored));
+      return;
+    }
+    if (!_e2eeReady || _localAddress == null) return;
+    final conversation = await _local.getConversation(message.conversationId);
+    final recipientDeviceId = conversation?.remoteDeviceId;
+    if (recipientDeviceId == null) {
+      await _local.updateDeliveryStatus(message.id, DeliveryStatus.failed);
+      _updates.add(MessagingUpdate(conversationId: message.conversationId));
+      return;
+    }
+    final activeUserId = _activeUserId!;
+    final participants = await _local.getParticipants(message.conversationId);
+    final recipientUserId = participants
+        .map((user) => user.id)
+        .firstWhere((id) => id != activeUserId);
+    final remote = DeviceAddress(
+      userId: recipientUserId,
+      deviceId: recipientDeviceId,
+    );
+    final envelope = await _sessionOperations.synchronized(remote, () async {
+      if (!await _e2ee.hasSession(remote)) {
+        await _e2ee.establishSession(remote, await _crypto.fetchBundle(remote));
+      }
+      final inner = utf8.encode(jsonEncode({
+        'type': 'text',
+        'body': message.content,
+        'reply_to': message.replyToMessageId,
+        'client_created_at': message.createdAt.toUtc().toIso8601String(),
+        'message_id': message.id,
+        'conversation_id': message.conversationId,
+        'sender_user_id': activeUserId,
+        'sender_device_id': _localAddress!.deviceId,
+        'recipient_user_id': recipientUserId,
+        'recipient_device_id': recipientDeviceId,
+      }));
+      return _e2ee.encrypt(
+        messageId: message.id,
+        conversationId: message.conversationId,
+        sender: _localAddress!,
+        recipient: remote,
+        plaintext: Uint8List.fromList(inner),
+      );
     });
+    final transport = <String, dynamic>{
+      'message_id': envelope.messageId,
+      'conversation_id': envelope.conversationId,
+      'recipient_device_id': envelope.recipient.deviceId,
+      'transport_security': 'e2ee',
+      'protocol_version': envelope.protocolVersion,
+      'message_type': envelope.messageType,
+      'ciphertext': base64Encode(envelope.ciphertext),
+      'client_created_at': message.createdAt.toUtc().toIso8601String(),
+    };
+    await _local.persistEncryptedEnvelope(message.id, jsonEncode(transport));
+    await _sendEncryptedEnvelope(message, transport);
+  }
+
+  Future<void> _sendEncryptedEnvelope(
+      ChatMessage message, Map<String, dynamic> transport) async {
+    final sent = _socket.send('message.send', transport);
     if (!sent) return;
     _acceptanceTimers[message.id]?.cancel();
     _acceptanceTimers[message.id] = Timer(const Duration(seconds: 8), () async {
@@ -115,7 +191,7 @@ class NetworkMessageRepository
         await _local.updateDeliveryStatus(message.id, DeliveryStatus.failed);
         _updates.add(MessagingUpdate(conversationId: message.conversationId));
       } else {
-        await _submit(message);
+        await _sendEncryptedEnvelope(message, transport);
       }
     });
   }
@@ -133,6 +209,7 @@ class NetworkMessageRepository
     final payload =
         (event['payload'] as Map?)?.cast<String, dynamic>() ?? const {};
     if (type == 'connection.ready') {
+      await _prepareE2ee(payload);
       await _retryOutbox();
       return;
     }
@@ -158,6 +235,14 @@ class NetworkMessageRepository
       return;
     }
     if (type == 'message.new') {
+      if (payload['transport_security'] == 'e2ee') {
+        await _handleEncryptedIncoming(payload);
+        return;
+      }
+      if (!_allowDevelopmentPlaintextTransport ||
+          payload['transport_security'] != _developmentOnlyPlaintextTransport) {
+        return;
+      }
       final message = ChatMessage(
         id: payload['message_id'] as String,
         conversationId: payload['conversation_id'] as String,
@@ -179,6 +264,7 @@ class NetworkMessageRepository
         activeUserId,
         message.senderUserId,
         message.serverReceivedAt!,
+        remoteDeviceId: message.senderDeviceId,
       );
       await _local.persistIncomingMessage(message);
       // Durable ACK is deliberately sent only after the SQLite transaction.
@@ -202,6 +288,102 @@ class NetworkMessageRepository
             type == 'typing.start' ? payload['user_id'] as String? : null,
       ));
     }
+  }
+
+  static const _developmentOnlyPlaintextTransport = 'development_plaintext';
+
+  Future<void> _prepareE2ee(Map<String, dynamic> payload) async {
+    final userId = _activeUserId;
+    final deviceId = payload['device_id'] as String?;
+    if (userId == null || deviceId == null) return;
+    final local = DeviceAddress(userId: userId, deviceId: deviceId);
+    await _e2ee.initialize(local);
+    final bundle = await _e2ee.getPublicBundle();
+    await _crypto.publish(bundle);
+    await _e2ee.markPreKeysPublished(
+        bundle.oneTimePreKeys.map((key) => key.preKeyId).toList());
+    final available = await _crypto.availablePreKeyCount();
+    if (available < _preKeyReplenishmentThreshold) {
+      await _e2ee.replenishPreKeys(_preKeyTarget - available);
+      final replenishment = await _e2ee.getPublicBundle();
+      await _crypto.publish(replenishment);
+      await _e2ee.markPreKeysPublished(
+        replenishment.oneTimePreKeys.map((key) => key.preKeyId).toList(),
+      );
+    }
+    _localAddress = local;
+    _e2eeReady = true;
+  }
+
+  static const _preKeyReplenishmentThreshold = 20;
+  static const _preKeyTarget = 50;
+
+  Future<void> _handleEncryptedIncoming(Map<String, dynamic> payload) async {
+    final local = _localAddress;
+    final activeUserId = _activeUserId;
+    if (!_e2eeReady || local == null || activeUserId == null) return;
+    final messageId = payload['message_id'] as String;
+    if (await _local.hasMessage(messageId)) {
+      _socket.send('message.delivered', {'message_id': messageId});
+      return;
+    }
+    final sender = DeviceAddress(
+      userId: payload['sender_user_id'] as String,
+      deviceId: payload['sender_device_id'] as String,
+    );
+    if (payload['recipient_user_id'] != activeUserId ||
+        payload['recipient_device_id'] != local.deviceId) {
+      return;
+    }
+    final envelope = EncryptedEnvelope(
+      version: 1,
+      messageId: messageId,
+      conversationId: payload['conversation_id'] as String,
+      sender: sender,
+      recipient: local,
+      protocolVersion: payload['protocol_version'] as int,
+      messageType: payload['message_type'] as String,
+      ciphertext: base64Decode(payload['ciphertext'] as String),
+    );
+    final decrypted = await _sessionOperations.synchronized(
+      sender,
+      () => _e2ee.decrypt(envelope),
+    );
+    final inner = jsonDecode(utf8.decode(decrypted.plaintext));
+    if (inner is! Map<String, dynamic> ||
+        inner['type'] != 'text' ||
+        inner['message_id'] != messageId ||
+        inner['conversation_id'] != envelope.conversationId ||
+        inner['sender_user_id'] != sender.userId ||
+        inner['sender_device_id'] != sender.deviceId ||
+        inner['recipient_user_id'] != activeUserId ||
+        inner['recipient_device_id'] != local.deviceId) {
+      return;
+    }
+    final receivedAt = DateTime.parse(payload['server_received_at'] as String);
+    final message = ChatMessage(
+      id: messageId,
+      conversationId: envelope.conversationId,
+      senderUserId: sender.userId,
+      senderDeviceId: sender.deviceId,
+      type: MessageType.text,
+      content: inner['body'] as String,
+      replyToMessageId: inner['reply_to'] as String?,
+      createdAt: DateTime.parse(inner['client_created_at'] as String),
+      updatedAt: receivedAt,
+      serverReceivedAt: receivedAt,
+      deliveryStatus: DeliveryStatus.delivered,
+    );
+    await _local.ensureDirectConversation(
+      message.conversationId,
+      activeUserId,
+      sender.userId,
+      receivedAt,
+      remoteDeviceId: sender.deviceId,
+    );
+    await _local.persistIncomingMessage(message);
+    _socket.send('message.delivered', {'message_id': message.id});
+    _updates.add(MessagingUpdate(conversationId: message.conversationId));
   }
 
   void _handleState(MessagingConnectionState state) {

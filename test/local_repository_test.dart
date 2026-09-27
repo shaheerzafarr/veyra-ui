@@ -127,6 +127,25 @@ void main() {
     await reopenedDatabase.close();
   });
 
+  test('direct conversation persists its immutable remote device target',
+      () async {
+    final users = await repository.getUsers();
+    final alice = users.firstWhere((user) => user.username == 'alex');
+    final bob = users.firstWhere((user) => user.username == 'sarah');
+    const conversationId = '77777777-7777-4777-8777-777777777777';
+    const bobDeviceId = '88888888-8888-4888-8888-888888888888';
+    await repository.ensureDirectConversation(
+      conversationId,
+      alice.id,
+      bob.id,
+      DateTime.now().toUtc(),
+      remoteDeviceId: bobDeviceId,
+    );
+
+    final conversation = await repository.getConversation(conversationId);
+    expect(conversation?.remoteDeviceId, bobDeviceId);
+  });
+
   test('incoming message persistence is idempotent and statuses are real',
       () async {
     final users = await repository.getUsers();

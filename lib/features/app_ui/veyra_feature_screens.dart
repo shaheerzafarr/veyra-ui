@@ -13,6 +13,8 @@ import '../../core/theme/app_theme.dart';
 import '../discovery/discover_people_screen.dart';
 import '../chats/conversation_extras.dart';
 import '../settings/settings_pages.dart';
+import '../../security/e2ee_verification_screen.dart';
+import '../../security/models/e2ee_models.dart';
 
 class VeyraRequestsScreen extends ConsumerWidget {
   const VeyraRequestsScreen({super.key});
@@ -454,14 +456,28 @@ class _VeyraConversationScreenState
                 title: const Text('Chat information'),
                 onTap: () {
                   Navigator.pop(context);
-                  Navigator.push(
-                      context,
-                      MaterialPageRoute<void>(
-                          builder: (_) => widget.group
-                              ? GroupDetailsScreen(
-                                  name: widget.name,
-                                  conversationId: widget.conversationId)
-                              : const GroupMediaScreen()));
+                  Navigator.push(context, MaterialPageRoute<void>(builder: (_) {
+                    if (widget.group) {
+                      return GroupDetailsScreen(
+                          name: widget.name,
+                          conversationId: widget.conversationId);
+                    }
+                    final id = widget.conversationId;
+                    final summary = id == null
+                        ? null
+                        : ref
+                            .read(veyraControllerProvider)
+                            .conversationById(id);
+                    final userId = summary?.otherUserId;
+                    final deviceId = summary?.conversation.remoteDeviceId;
+                    if (userId == null || deviceId == null) {
+                      return const GroupMediaScreen();
+                    }
+                    return E2eeVerificationScreen(
+                      contactName: widget.name,
+                      remote: DeviceAddress(userId: userId, deviceId: deviceId),
+                    );
+                  }));
                 }),
             ListTile(
                 leading: const Icon(Icons.notifications_off_outlined),
